@@ -9,6 +9,8 @@ family from claiming benefits if something happens to them.
 
 KaamPramaan lets a worker send a short voice note every evening. It keeps a tamper-evident record
 of each working day and turns it into a wage complaint or a welfare board work record when needed.
+The same record helps workers find their next job: openings are ranked so that contractors who have
+not paid wages logged by other workers come lower.
 
 ## What it does
 
@@ -17,6 +19,8 @@ of each working day and turns it into a wage complaint or a welfare board work r
 | Worker with a smartphone | WhatsApp voice note or text, photo of the site board | Daily confirmation, running total of days and money due, complaint PDF |
 | Worker without a phone | A volunteer logs the group on the website | Same record, marked "logged by volunteer" |
 | NGO, union, family | Website | Each worker's history, unpaid days, record check, PDFs |
+| Worker looking for work | "Kaam chahiye" on WhatsApp | Top three openings for them, with wage, place, contact and warnings |
+| NGO, union, site supervisor | Website, "Work openings" | Post openings and see how often each was shown |
 
 Conversation example (worker side):
 
@@ -40,6 +44,7 @@ Volunteer form ─────► POST /volunteer ──────────
                           Ledger (app/ledger.py): append-only, SHA-256 hash chain per worker
                           Records (app/records.py): days worked, FIFO payment matching, welfare eligibility
                           PDFs (app/pdfs.py): wage complaint, welfare board work record
+                          Recommender (app/recommend.py): embeddings -> retrieve -> rank -> personalise
 ```
 
 Design choices worth knowing:
@@ -69,6 +74,42 @@ Design choices worth knowing:
   moves to the next model in `GEMINI_FALLBACK_MODELS`. If every model fails, text messages still go through the
   offline parser, so a busy API never loses a worker's entry.
 - **Works offline for development.** Without a Gemini key, a rule-based English/Hinglish parser handles text messages.
+
+## Finding work (recommendations)
+
+When a worker says "kaam chahiye" (or the agent calls `find_work`), `app/recommend.py` ranks open openings in three steps:
+
+1. **Retrieval.** The request and each opening are embedded with Gemini (`GEMINI_EMBED_MODEL`, query and document
+   task types). The top 20 openings by cosine similarity go on to ranking. If the request is vague ("kaam chahiye"),
+   the worker's own past work from their ledger is used as the query. Opening embeddings are cached in SQLite.
+2. **Ranking.** Five signals, each 0 to 1, are combined with fixed weights:
+
+   | Signal | Weight | From |
+   |---|---|---|
+   | match | 0.40 | Embedding similarity to the request (and to the worker's past work) |
+   | distance | 0.20 | Worker's last shared location to the site |
+   | wage | 0.15 | Opening's wage compared with what this worker usually earns |
+   | reliability | 0.15 | Share of days logged against this contractor, by all workers, that were paid (FIFO, smoothed) |
+   | familiar | 0.10 | This worker was paid by this contractor before (up), or is owed money by them (down, with a warning) |
+
+3. **Logging.** Every shown result is stored in `recommendations` with its rank and score, so changes can be
+   measured on real use later.
+
+Without a Gemini key, or if the embedding call fails, a hashing embedder (words and character trigrams) is used for
+both sides, so the feature still works.
+
+**Evaluation.** `python -m scripts.eval_recommend` runs 14 made-up labelled cases (12 openings around Delhi NCR,
+including Hindi-only requests like "rang rogan ka kaam" and vague ones like "kaam chahiye"). Results on 19 Nov 2026:
+
+| Embeddings | Variant | Top-1 | Top-3 | MRR |
+|---|---|---|---|---|
+| gemini-embedding-001 | meaning only | 86% | 93% | 0.91 |
+| gemini-embedding-001 | full ranker | 93% | 93% | 0.95 |
+| offline hashing | meaning only | 57% | 71% | 0.68 |
+| offline hashing | full ranker | 71% | 86% | 0.80 |
+
+Known weakness: a new contractor with no history gets a neutral reliability score, so a good opening from them can
+lose to a known contractor's weaker match (the one Gemini miss, "bijli ka kaam aata hai").
 
 ## Run it locally
 
@@ -130,6 +171,7 @@ app/
   ledger.py      hash-chained entries and verification
   records.py     totals, unpaid days, welfare eligibility
   pdfs.py        complaint and work-record PDFs
+  recommend.py   work recommendations: embeddings, ranking, personalisation
   whatsapp.py    Cloud API parsing, HMAC check, media download, sending
   db.py          SQLite schema and queries
   templates/     website pages
@@ -142,5 +184,6 @@ tests/           ledger, records, parser, agent tool calls, full conversation, w
 - Firestore and Cloud Storage instead of SQLite and local files
 - Replies as voice notes in the worker's language (Gemini text-to-speech)
 - Missed-call voice line for keypad phones
+- Learn ranking weights from which recommended openings workers actually call
 - Rules for each state's welfare board forms
 - Family claim flow with OTP verification

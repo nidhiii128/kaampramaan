@@ -56,6 +56,17 @@ def main():
                     transcript=f"{contractor} ne {wage * 6} diye",
                 ))
         print(f"added {name}: {len(days)} days")
+    openings = [
+        ("Plaster work, interior walls", "Verma Infra", "Sector 75, Noida", (28.5770, 77.3850), 750),
+        ("Shuttering carpenter for slab casting", "Ramesh Constructions", "Sector 63, Noida", (28.6280, 77.3800), 850),
+        ("Helper for loading and unloading material", "Verma Infra", "Sector 62, Noida", (28.6270, 77.3720), 550),
+        ("Painting work, 2 painters needed", "Mohan", "Indirapuram", (28.6410, 77.3710), 700),
+    ]
+    for title, contractor, place, (lat, lon), wage in openings:
+        db.create_opening(title=title, wage=wage, starts_on=TODAY.isoformat(), posted_by="demo",
+                          contractor=contractor, location=place, latitude=lat, longitude=lon,
+                          slots=random.randint(2, 6), contact="9800000000")
+    print(f"added {len(openings)} work openings")
     db.create_case("death_report", reporter_phone="919900000999",
                    details="Mere bhai Mukesh ki Sector 62 site pe accident mein maut ho gayi")
 

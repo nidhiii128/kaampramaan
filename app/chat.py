@@ -10,6 +10,7 @@ from datetime import date
 from . import ledger, pdfs
 from .ai import AI, BoardInfo, Understanding, _clean
 from .db import Database
+from .recommend import CachedEmbedder, recommend
 from .records import rupees, summarise
 
 log = logging.getLogger(__name__)
@@ -49,6 +50,11 @@ class Bot:
     media_dir: str
     public_base_url: str
     today_fn: callable = field(default=date.today)
+    embedder: CachedEmbedder | None = None   # None: offline hashing embedder
+
+    def __post_init__(self):
+        if self.embedder is None:
+            self.embedder = CachedEmbedder(self.db)
 
     # ------------------------------------------------------------------ entry point
     def handle(self, msg: Inbound) -> list[Reply]:
@@ -154,7 +160,7 @@ class Bot:
 
         def execute(name: str, args: dict) -> dict:
             u = Understanding(
-                intent=TOOL_TO_INTENT[name], transcript=str(args.get("transcript") or ""),
+                intent=TOOL_TO_INTENT[name], transcript=str(args.get("transcript") or args.get("query") or ""),
                 work_date=args.get("work_date"), contractor=args.get("contractor"),
                 wage=_int_or_none(args.get("wage")), paid=args.get("paid"),
                 amount=_int_or_none(args.get("amount")), worker_name=args.get("worker_name"),
@@ -194,6 +200,8 @@ class Bot:
             return self._registration(worker)
         if name == "report_death":
             return self._report_death(msg, u)
+        if name == "find_work":
+            return self._find_work(worker, u)
         raise ValueError(f"unknown tool {name}")
 
     # ------------------------------------------------------------------ tools
@@ -263,6 +271,28 @@ class Bot:
             Reply("Hum aapke saath hain. We are very sorry.\n"
                   "Ek NGO volunteer aapse jaldi sampark karega. An NGO volunteer will contact you soon to help "
                   "with the claim. Please keep the worker's Aadhaar and phone number ready."))
+
+    def _find_work(self, worker, u: Understanding) -> ToolOutcome:
+        query = (u.transcript or "").strip() or None
+        recs = recommend(self.db, worker, query, self.embedder, self.today_fn())
+        if not recs:
+            return ToolOutcome({"openings": [], "reason": "no open work right now"},
+                               Reply("Abhi koi kaam nahi mila. No openings right now. Hum naya kaam aate hi batayenge."))
+        data, lines = [], []
+        for n, r in enumerate(recs, 1):
+            o = r.opening
+            data.append({"rank": n, "title": o["title"], "wage": o["wage"], "place": o["location"],
+                         "distance_km": r.distance_km, "contractor": o["contractor"], "contact": o["contact"],
+                         "starts_on": o["starts_on"], "why": r.reasons, "warning": r.warning})
+            line = f"{n}. {o['title']}, Rs. {rupees(o['wage'])}/day"
+            line += f", {o['location']}" if o["location"] else ""
+            line += f" ({r.distance_km} km)" if r.distance_km is not None else ""
+            line += f". Call {o['contact']}" if o["contact"] else ""
+            if r.warning:
+                line += f"\n   Dhyan dein / Careful: {r.warning}."
+            lines.append(line)
+        return ToolOutcome({"openings": data},
+                           Reply("Aapke liye kaam / Work for you:\n" + "\n".join(lines)))
 
     # ------------------------------------------------------------------ documents
     def _complaint(self, worker) -> ToolOutcome:
@@ -346,7 +376,7 @@ def _int_or_none(v):
 INTENT_TO_TOOL = {
     "log_work": "log_work", "record_payment": "record_payment", "ask_balance": "get_balance",
     "request_complaint": "make_complaint", "request_registration": "make_work_record",
-    "report_death": "report_death",
+    "report_death": "report_death", "find_work": "find_work",
 }
 TOOL_TO_INTENT = {tool: intent for intent, tool in INTENT_TO_TOOL.items()}
 
@@ -358,5 +388,6 @@ HOW_TO_LOG = (
     "- \"Ramesh paid me 5000\"\n"
     "- \"How many days?\"\n"
     "- \"Ramesh has not paid me\" (get a complaint)\n"
-    "- \"Registration\" (welfare board work record)"
+    "- \"Registration\" (welfare board work record)\n"
+    "- \"Kaam chahiye\" (find new work)"
 )

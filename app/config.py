@@ -21,6 +21,7 @@ class Settings:
     admin_user: str
     admin_password: str
     timezone: str = "Asia/Kolkata"
+    gemini_embed_model: str = "gemini-embedding-001"
 
     def today(self) -> date:
         """Workers are in India; the server (WSL, Cloud Run) usually runs in UTC."""
@@ -58,4 +59,5 @@ def load_settings() -> Settings:
         admin_user=env("KP_ADMIN_USER", "admin"),
         admin_password=env("KP_ADMIN_PASSWORD", ""),
         timezone=env("KP_TIMEZONE", "Asia/Kolkata"),
+        gemini_embed_model=env("GEMINI_EMBED_MODEL", "gemini-embedding-001"),
     )

@@ -16,6 +16,7 @@ from app.ai import AI
 from app.chat import Bot, Inbound
 from app.config import load_settings
 from app.db import Database
+from app.recommend import CachedEmbedder, GeminiEmbedder
 
 TEXTS = [
     "Aaj Ramesh thekedar ke saath kaam kiya, 700 rupaye abhi nahi mile",
@@ -77,6 +78,7 @@ AGENT_TEXTS = [
     "Kal bhi kaam kiya 700, aur Ramesh ne aaj 500 diye",
     "Kitna baaki hai?",
     "Ramesh paisa nahi de raha, shikayat chahiye",
+    "Noida mein plaster ka kaam chahiye",
 ]
 
 
@@ -86,8 +88,13 @@ def check_agent(ai, today):
         db = Database(os.path.join(tmp, "kp.db"))
         site = db.create_site(project="Demo site", employer_type="small", contractor="Ramesh")
         db.create_worker("demo", name="Raju", state="active", site_id=site)
+        db.create_opening(title="Plaster work, interior walls", wage=750, starts_on=today.isoformat(),
+                          posted_by="demo", contractor="Mohan", location="Sector 62, Noida", contact="9800000000")
+        db.create_opening(title="Painting work, 2 painters", wage=700, starts_on=today.isoformat(),
+                          posted_by="demo", contractor="Mohan", location="Indirapuram", contact="9800000001")
+        embedder = CachedEmbedder(db, GeminiEmbedder(ai.client, load_settings().gemini_embed_model))
         bot = Bot(db=db, ai=ai, media_dir=os.path.join(tmp, "media"), public_base_url="http://localhost",
-                  today_fn=lambda: today)
+                  today_fn=lambda: today, embedder=embedder)
         real_run = ai.run_agent
 
         def traced(execute, **kw):

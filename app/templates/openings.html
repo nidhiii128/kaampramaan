@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Work openings</h1>
+<p class="muted">Openings posted here are matched to workers who send "kaam chahiye" on WhatsApp. Workers see the best
+three for them, ranked by the kind of work, distance, wage, and whether the contractor has paid the wages workers logged.</p>
+
+{% if saved %}<p class="ok">Posted: {{ saved }}.</p>{% endif %}
+
+<div class="row">
+<form method="post" action="/openings" class="card grid">
+  <h2>Post an opening</h2>
+  <label>Work <input name="title" required placeholder="Plastering work, 4 workers"></label>
+  <label>Details <textarea name="details" rows="3" placeholder="Interior plaster, 3rd floor. Shuttering experience welcome."></textarea></label>
+  <label>Contractor <input name="contractor"></label>
+  <label>Place <input name="location" placeholder="Sector 62, Noida"></label>
+  <label>Latitude <input name="latitude" inputmode="decimal" placeholder="28.6270 (optional)"></label>
+  <label>Longitude <input name="longitude" inputmode="decimal" placeholder="77.3720 (optional)"></label>
+  <label>Day's wage (Rs.) <input type="number" name="wage" min="1" max="100000" required></label>
+  <label>Workers needed <input type="number" name="slots" min="1" max="1000" value="1"></label>
+  <label>Contact number <input name="contact"></label>
+  <label>Starts <input type="date" name="starts_on" value="{{ today }}" required></label>
+  <label>Ends <input type="date" name="ends_on"></label>
+  <button>Post</button>
+</form>
+
+<div>
+  <h2>Posted</h2>
+  <table>
+    <tr><th>Work</th><th>Wage</th><th>Place</th><th>Contractor</th><th>Shown</th><th></th></tr>
+    {% for o in openings %}
+    <tr>
+      <td>{{ o.title }}{% if not o.active %} <span class="tag">closed</span>{% endif %}</td>
+      <td>Rs. {{ o.wage|rupees }}</td>
+      <td>{{ o.location or "" }}</td>
+      <td>{{ o.contractor or "" }}</td>
+      <td>{{ o.times_shown }}</td>
+      <td>{% if o.active %}<form method="post" action="/openings/{{ o.id }}/close"><button class="secondary">Close</button></form>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">No openings yet.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+</div>
+{% endblock %}

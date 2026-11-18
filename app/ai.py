@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 Intent = Literal[
     "register_details", "log_work", "record_payment", "ask_balance",
-    "request_complaint", "request_registration", "report_death", "help", "unknown",
+    "request_complaint", "request_registration", "report_death", "find_work", "help", "unknown",
 ]
 
 
@@ -65,6 +65,7 @@ intents:
 - request_complaint: they say they were not paid, or ask for a complaint
 - request_registration: they ask about welfare board registration
 - report_death: someone reports that a worker died or was badly injured
+- find_work: they are looking for new work or a job
 - help: greeting or asking what to do
 Return the transcript in Latin script (romanised if needed)."""
 
@@ -87,6 +88,8 @@ Use the tools to act on the message:
 - They say they were not paid, or ask for a complaint: call make_complaint.
 - They ask about welfare board registration or their work record: call make_work_record.
 - Someone reports that a worker died or was badly injured: call report_death.
+- They are looking for new work: call find_work with what kind of work and where, if they said it.
+  Tell them the top openings with wage, place and contact, and repeat any warning the tool gives.
 One message can need more than one tool, for example work logged and money received.
 Never guess a wage, amount or date that was not said. Pass a short transcript of what was said,
 in Latin script, to log_work, record_payment and report_death.
@@ -141,6 +144,18 @@ TOOLS = [
         "name": "make_work_record",
         "description": "Create the work record PDF used for welfare board registration (90 days rule).",
         "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "find_work",
+        "description": "Find work openings that suit this worker, ranked by fit, distance, wage and whether the "
+                       "contractor pays.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": "Kind of work and place they asked for, in Latin script. Empty if not said."},
+            },
+        },
     },
     {
         "name": "report_death",
@@ -433,6 +448,10 @@ def parse_text(text: str, expected: str = "none", today: date | None = None) -> 
                   "nahi diya", "paisa nahi", "complaint", "shikayat"]):
         u.intent = "request_complaint"
         u.contractor = _contractor(text)
+    elif _has(t, ["kaam chahiye", "kam chahiye", "kaam chaiye", "need work", "need a job", "looking for work",
+                  "find work", "find me work", "any work", "naukri", "kaam dhund", "kaam milega", "job chahiye",
+                  "koi kaam", "work chahiye", "new work", "naya kaam"]):
+        u.intent = "find_work"
     elif worked:
         u.intent = "log_work"
         u.wage = _amount(text)

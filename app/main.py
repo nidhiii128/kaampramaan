@@ -15,6 +15,7 @@ from .ai import AI
 from .chat import Bot, Inbound
 from .config import Settings, load_settings
 from .db import Database
+from .recommend import CachedEmbedder, GeminiEmbedder
 from .records import rupees, summarise
 from .whatsapp import WhatsAppClient, parse_webhook, verify_signature
 
@@ -27,7 +28,9 @@ def create_app(settings: Settings | None = None, ai: AI | None = None, today_fn=
     today_fn = today_fn or s.today
     db = Database(s.db_path)
     ai = ai or AI(s.gemini_api_key, s.gemini_model, s.gemini_fallback_models)
-    bot = Bot(db=db, ai=ai, media_dir=s.media_dir, public_base_url=s.public_base_url, today_fn=today_fn)
+    embedder = CachedEmbedder(db, GeminiEmbedder(ai.client, s.gemini_embed_model) if ai.client else None)
+    bot = Bot(db=db, ai=ai, media_dir=s.media_dir, public_base_url=s.public_base_url, today_fn=today_fn,
+              embedder=embedder)
     wa = WhatsAppClient(s)
 
     app = FastAPI(title="KaamPramaan", docs_url=None, redoc_url=None)
@@ -189,6 +192,43 @@ def create_app(settings: Settings | None = None, ai: AI | None = None, today_fn=
             sites = c.execute("SELECT * FROM sites ORDER BY created_at DESC").fetchall()
         return tpl.TemplateResponse(request, "volunteer.html",
                                     {"sites": sites, "today": today_fn().isoformat(), "done": logged})
+
+    # ------------------------------------------------------------------ work openings
+    @app.get("/openings")
+    def openings_page(request: Request, user: str = Depends(staff)):
+        return tpl.TemplateResponse(request, "openings.html", {
+            "openings": db.list_openings(), "today": today_fn().isoformat(), "saved": None})
+
+    @app.post("/openings")
+    def openings_create(request: Request, title: str = Form(...), wage: int = Form(...),
+                        starts_on: str = Form(...), ends_on: str = Form(""), details: str = Form(""),
+                        contractor: str = Form(""), location: str = Form(""), latitude: str = Form(""),
+                        longitude: str = Form(""), slots: int = Form(1), contact: str = Form(""),
+                        user: str = Depends(staff)):
+        try:
+            start = date.fromisoformat(starts_on)
+            end = date.fromisoformat(ends_on) if ends_on else None
+            lat = float(latitude) if latitude.strip() else None
+            lon = float(longitude) if longitude.strip() else None
+        except ValueError:
+            raise HTTPException(400, "bad date or location")
+        if not title.strip() or not (0 < wage <= 100000) or not (0 < slots <= 1000):
+            raise HTTPException(400, "title, wage and slots are required")
+        if end and end < start:
+            raise HTTPException(400, "end date is before start date")
+        if (lat is None) != (lon is None) or (lat is not None and not (-90 <= lat <= 90 and -180 <= lon <= 180)):
+            raise HTTPException(400, "give both latitude and longitude, or neither")
+        db.create_opening(title=title.strip(), wage=wage, starts_on=start.isoformat(),
+                          ends_on=end.isoformat() if end else None, details=details.strip() or None,
+                          contractor=contractor.strip().title() or None, location=location.strip() or None,
+                          latitude=lat, longitude=lon, slots=slots, contact=contact.strip() or None, posted_by=user)
+        return tpl.TemplateResponse(request, "openings.html", {
+            "openings": db.list_openings(), "today": today_fn().isoformat(), "saved": title.strip()})
+
+    @app.post("/openings/{opening_id}/close")
+    def openings_close(opening_id: int, user: str = Depends(staff)):
+        db.close_opening(opening_id)
+        return RedirectResponse("/openings", status_code=303)
 
     # ------------------------------------------------------------------ chat simulator (demo without WhatsApp)
     @app.get("/simulator")

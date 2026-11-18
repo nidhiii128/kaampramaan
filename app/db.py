@@ -75,6 +75,47 @@ CREATE TABLE IF NOT EXISTS processed_messages (
     message_id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL
 );
+
+-- Work openings posted by NGOs, unions or site supervisors, matched to workers by app/recommend.py
+CREATE TABLE IF NOT EXISTS openings (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    details TEXT,
+    contractor TEXT,
+    site_id INTEGER REFERENCES sites(id),
+    location TEXT,
+    latitude REAL,
+    longitude REAL,
+    wage INTEGER NOT NULL CHECK (wage > 0),
+    slots INTEGER NOT NULL DEFAULT 1 CHECK (slots > 0),
+    contact TEXT,
+    starts_on TEXT NOT NULL,
+    ends_on TEXT,
+    posted_by TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_openings_active ON openings (active, ends_on);
+
+-- Embedding cache: an opening's text is embedded once per model, not on every search
+CREATE TABLE IF NOT EXISTS embeddings (
+    model TEXT NOT NULL,
+    text_sha256 TEXT NOT NULL,
+    vector TEXT NOT NULL,              -- JSON list of floats
+    PRIMARY KEY (model, text_sha256)
+);
+
+-- What each worker was shown, in which order, so ranking can be evaluated later
+CREATE TABLE IF NOT EXISTS recommendations (
+    id INTEGER PRIMARY KEY,
+    worker_id INTEGER NOT NULL REFERENCES workers(id),
+    opening_id INTEGER NOT NULL REFERENCES openings(id),
+    rank INTEGER NOT NULL,
+    score REAL NOT NULL,
+    query TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recommendations_worker ON recommendations (worker_id, created_at);
 """
 
 
@@ -212,6 +253,67 @@ class Database:
     def get_document(self, token):
         with self.connect() as c:
             return c.execute("SELECT * FROM documents WHERE token = ?", (token,)).fetchone()
+
+    # ---- work openings ----
+    def create_opening(self, title, wage, starts_on, posted_by, details=None, contractor=None, site_id=None,
+                       location=None, latitude=None, longitude=None, slots=1, contact=None, ends_on=None) -> int:
+        with self.connect() as c:
+            cur = c.execute(
+                """INSERT INTO openings (title, details, contractor, site_id, location, latitude, longitude, wage,
+                   slots, contact, starts_on, ends_on, posted_by, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (title, details, contractor, site_id, location, latitude, longitude, wage, slots, contact,
+                 starts_on, ends_on, posted_by, now_iso()),
+            )
+            return cur.lastrowid
+
+    def list_open_openings(self, today: str):
+        """Active openings that have not ended yet."""
+        with self.connect() as c:
+            return c.execute(
+                """SELECT * FROM openings WHERE active = 1 AND (ends_on IS NULL OR ends_on >= ?)
+                   ORDER BY starts_on, id""", (today,)
+            ).fetchall()
+
+    def list_openings(self):
+        with self.connect() as c:
+            return c.execute(
+                """SELECT o.*, COUNT(r.id) AS times_shown FROM openings o
+                   LEFT JOIN recommendations r ON r.opening_id = o.id
+                   GROUP BY o.id ORDER BY o.active DESC, o.created_at DESC"""
+            ).fetchall()
+
+    def close_opening(self, opening_id: int):
+        with self.connect() as c:
+            c.execute("UPDATE openings SET active = 0 WHERE id = ?", (opening_id,))
+
+    def get_embeddings(self, model: str, hashes: list[str]) -> dict[str, str]:
+        if not hashes:
+            return {}
+        with self.connect() as c:
+            rows = c.execute(
+                f"SELECT text_sha256, vector FROM embeddings WHERE model = ? AND text_sha256 IN "
+                f"({', '.join('?' for _ in hashes)})", (model, *hashes)
+            ).fetchall()
+        return {r["text_sha256"]: r["vector"] for r in rows}
+
+    def put_embeddings(self, model: str, items: dict[str, str]):
+        with self.connect() as c:
+            c.executemany("INSERT OR REPLACE INTO embeddings VALUES (?, ?, ?)",
+                          [(model, h, v) for h, v in items.items()])
+
+    def log_recommendations(self, worker_id: int, query: str | None, ranked: list[tuple[int, float]]):
+        with self.connect() as c:
+            c.executemany(
+                "INSERT INTO recommendations (worker_id, opening_id, rank, score, query, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(worker_id, oid, i, round(score, 4), query, now_iso()) for i, (oid, score) in enumerate(ranked, 1)],
+            )
+
+    def all_work_entries(self):
+        """Every entry from every worker, oldest first. Used for contractor payment records."""
+        with self.connect() as c:
+            return c.execute("SELECT * FROM entries ORDER BY worker_id, seq").fetchall()
 
     # ---- webhook de-duplication (Meta retries deliveries) ----
     def mark_processed(self, message_id: str) -> bool:
