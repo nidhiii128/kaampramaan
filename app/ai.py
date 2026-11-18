@@ -5,6 +5,11 @@ from voice, text and photos into a fixed JSON schema. All money and eligibility
 calculations happen in plain Python (records.py), so every number in a complaint
 can be traced back to ledger entries.
 
+For daily messages Gemini works as an agent: it decides which tools to call
+(log_work, record_payment, get_balance, ...), the tools run in Python against the
+ledger, and Gemini writes the reply from the tool results. A reply that mentions a
+number no tool returned is thrown away and the tools' own fixed replies are sent.
+
 Without GEMINI_API_KEY the app still runs: text messages go through a simple
 English/Hinglish parser, so the project can be developed and tested offline.
 """
@@ -12,8 +17,9 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -70,6 +76,103 @@ companies, 'small' if it looks like a small private building or a house, 'unknow
 If it is not a site board, set is_site_board to false."""
 
 
+AGENT_PROMPT = """You are KaamPramaan, a WhatsApp assistant that keeps a record of work and wages for
+daily-wage construction workers in India. Today is {today}. The worker is {name}.
+The worker may speak Hindi, Bhojpuri, Bengali, Odia, Marathi, English or a mix.
+
+Use the tools to act on the message:
+- They worked (today or a recent day): call log_work. Leave wage empty if they did not say it.
+- They received money: call record_payment.
+- They ask how many days, how much is due, or their status: call get_balance.
+- They say they were not paid, or ask for a complaint: call make_complaint.
+- They ask about welfare board registration or their work record: call make_work_record.
+- Someone reports that a worker died or was badly injured: call report_death.
+One message can need more than one tool, for example work logged and money received.
+Never guess a wage, amount or date that was not said. Pass a short transcript of what was said,
+in Latin script, to log_work, record_payment and report_death.
+
+After the tools run, reply in one to three short sentences, in the same language and script the
+worker used. Only use numbers that appear in the tool results. If a tool returns an error, ask the
+worker for what is missing. If no tool fits, tell them briefly how to log a day's work."""
+
+_TRANSCRIPT = {"type": "string", "description": "What the worker said, in Latin script"}
+_DATE = {"type": "string", "description": "ISO date YYYY-MM-DD of the work. Omit for today."}
+
+TOOLS = [
+    {
+        "name": "log_work",
+        "description": "Record one day of work for the worker.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "work_date": _DATE,
+                "contractor": {"type": "string", "description": "Contractor or thekedar name, if said"},
+                "wage": {"type": "integer", "description": "That day's wage in rupees, only if said"},
+                "paid": {"type": "boolean", "description": "True if that day's wage was already paid"},
+                "transcript": _TRANSCRIPT,
+            },
+            "required": ["transcript"],
+        },
+    },
+    {
+        "name": "record_payment",
+        "description": "Record money the worker received from a contractor.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "amount": {"type": "integer", "description": "Rupees received"},
+                "contractor": {"type": "string", "description": "Who paid, if said"},
+                "transcript": _TRANSCRIPT,
+            },
+            "required": ["amount", "transcript"],
+        },
+    },
+    {
+        "name": "get_balance",
+        "description": "Get days worked, money earned, received and still due, and welfare board eligibility.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "make_complaint",
+        "description": "Create a wage complaint PDF listing every unpaid day.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "make_work_record",
+        "description": "Create the work record PDF used for welfare board registration (90 days rule).",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "report_death",
+        "description": "Open a case for an NGO volunteer when a worker has died or was badly injured.",
+        "parameters": {
+            "type": "object",
+            "properties": {"worker_name": {"type": "string"}, "transcript": _TRANSCRIPT},
+            "required": ["transcript"],
+        },
+    },
+]
+TOOL_NAMES = {t["name"] for t in TOOLS}
+MAX_AGENT_STEPS = 4
+
+
+@dataclass
+class ToolCall:
+    name: str
+    args: dict
+    result: dict
+
+
+@dataclass
+class AgentResult:
+    text: str | None                     # None: the reply was rejected or never written
+    calls: list[ToolCall] = field(default_factory=list)
+
+
+def numbers_in(text: str) -> set[int]:
+    return {int(n) for n in re.findall(r"\d+", text.replace(",", ""))}
+
+
 class AI:
     def __init__(self, api_key: str = "", model: str = "gemini-3.8-flash",
                  fallback_models: tuple[str, ...] = ("gemini-3.5-flash",)):
@@ -89,6 +192,10 @@ class AI:
 
     @property
     def enabled(self) -> bool:
+        return self.client is not None
+
+    @property
+    def can_call_tools(self) -> bool:
         return self.client is not None
 
     def _generate(self, contents, config=None):
@@ -139,6 +246,75 @@ class AI:
         )
         result = resp.parsed if isinstance(resp.parsed, Understanding) else Understanding(**json.loads(resp.text))
         return _clean(result, today)
+
+    # ---------- agent with tools ----------
+    def run_agent(self, execute: Callable[[str, dict], dict], text: str | None = None,
+                  audio: bytes | None = None, audio_mime: str = "audio/ogg",
+                  worker_name: str | None = None, today: date | None = None) -> AgentResult:
+        """Let Gemini call tools until it writes a reply.
+
+        execute(name, args) runs one tool and returns a JSON-safe dict. If Gemini fails
+        before any tool ran, the error is raised so the caller can use the intent parser.
+        If it fails after a tool ran, the calls made so far are returned with text=None,
+        so nothing is logged twice.
+        """
+        from google.genai import types
+        today = today or date.today()
+        config = types.GenerateContentConfig(
+            system_instruction=AGENT_PROMPT.format(today=today.isoformat(), name=worker_name or "unknown"),
+            tools=[types.Tool(function_declarations=[
+                types.FunctionDeclaration(name=t["name"], description=t["description"],
+                                          parameters_json_schema=t["parameters"]) for t in TOOLS])],
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            temperature=0,
+        )
+        parts = []
+        if audio:
+            parts.append(types.Part.from_bytes(data=audio, mime_type=audio_mime))
+        if text:
+            parts.append(types.Part.from_text(text=text))
+        contents = [types.Content(role="user", parts=parts)]
+        calls: list[ToolCall] = []
+
+        for _ in range(MAX_AGENT_STEPS):
+            try:
+                resp = self._generate(contents, config)
+            except Exception:
+                if not calls:
+                    raise
+                log.exception("Gemini failed after tools ran, sending fixed replies")
+                return AgentResult(None, calls)
+
+            requested = resp.function_calls or []
+            if not requested:
+                return AgentResult(self._checked_reply(resp.text, calls), calls)
+
+            contents.append(resp.candidates[0].content)
+            answers = []
+            for fc in requested:
+                args = dict(fc.args or {})
+                if fc.name not in TOOL_NAMES:
+                    result = {"error": f"unknown tool {fc.name}"}
+                else:
+                    result = execute(fc.name, args)
+                    calls.append(ToolCall(fc.name, args, result))
+                answers.append(types.Part.from_function_response(name=fc.name, response=result))
+            contents.append(types.Content(role="user", parts=answers))
+
+        log.warning("Agent stopped after %d steps without a reply", MAX_AGENT_STEPS)
+        return AgentResult(None, calls)
+
+    @staticmethod
+    def _checked_reply(text: str | None, calls: list[ToolCall]) -> str | None:
+        """Keep Gemini's reply only if every number in it came from a tool call or its result."""
+        out = (text or "").strip()
+        if not out:
+            return None
+        allowed = numbers_in(json.dumps([[c.args, c.result] for c in calls], ensure_ascii=False))
+        if not numbers_in(out) <= allowed:
+            log.warning("Agent reply used a number no tool returned, sending fixed replies: %r", out)
+            return None
+        return out
 
     # ---------- site board photos ----------
     def read_board(self, image: bytes, mime: str = "image/jpeg") -> BoardInfo:

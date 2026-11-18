@@ -36,7 +36,7 @@ Web chat simulator ──► POST /simulator/send ──────────
                                                                               │     registration, intents
 Volunteer form ─────► POST /volunteer ───────────────────────────────────────►│
                                                                               ▼
-                          Gemini (app/ai.py): voice/text -> structured entry, site board photo -> owner
+                          Gemini agent (app/ai.py): voice/text -> tool calls -> reply, site board photo -> owner
                           Ledger (app/ledger.py): append-only, SHA-256 hash chain per worker
                           Records (app/records.py): days worked, FIFO payment matching, welfare eligibility
                           PDFs (app/pdfs.py): wage complaint, welfare board work record
@@ -44,10 +44,18 @@ Volunteer form ─────► POST /volunteer ──────────
 
 Design choices worth knowing:
 
-- **Gemini only extracts facts.** It turns a voice note into `{intent, date, contractor, wage, paid}` using a fixed
-  JSON schema. All money and eligibility calculations are plain Python, so every number in a complaint can be traced
-  to ledger entries. When Gemini rewords the complaint paragraph, the output is rejected if it contains any number
-  that is not in the computed facts.
+- **Gemini is an agent with tools, but never does the maths.** For a daily message Gemini picks from six tools
+  (`log_work`, `record_payment`, `get_balance`, `make_complaint`, `make_work_record`, `report_death`) and can call
+  more than one, for example "worked yesterday for 700, and Ramesh gave 500 today". The tools run in plain Python
+  against the ledger and their results go back to Gemini, which writes a short reply in the worker's language.
+  Tool arguments are range-checked before anything is saved. All money and eligibility calculations are plain Python,
+  so every number can be traced to ledger entries.
+- **Number guard.** Gemini's reply to the worker, and its wording of the complaint paragraph, are rejected if they
+  contain any number that did not come from a tool call or the computed facts. The worker then gets the tool's fixed
+  reply instead.
+- **No double logging.** If Gemini fails before any tool runs, the message goes through the older intent extractor
+  and the offline parser. If it fails after a tool has run, the fixed replies for the tools that already ran are sent,
+  so a day is never saved twice.
 - **Tamper-evident ledger.** Each entry stores the hash of the previous entry for that worker, plus a SHA-256 of any
   attached voice note or photo. Editing, deleting or reordering an entry, or swapping a file, is detected by
   `verify_chain()` and shown on the website and in every PDF. Appends take a write lock (`BEGIN IMMEDIATE`) so
@@ -72,10 +80,11 @@ python -m scripts.seed_demo     # optional: sample workers for the website
 uvicorn app.main:create_app --factory --reload --port 8000
 ```
 
-Check your Gemini key and model. It prints what Gemini extracts from sample Hindi messages:
+Check your Gemini key and model. It prints what Gemini extracts from sample Hindi messages, and with `--agent`
+which tools the agent calls and what it replies (against a throwaway database):
 
 ```bash
-python -m scripts.check_gemini --image board.jpg --audio note.ogg   # both flags are optional
+python -m scripts.check_gemini --agent --image board.jpg --audio note.ogg   # all flags are optional
 ```
 
 Open http://localhost:8000 (log in with KP_ADMIN_USER / KP_ADMIN_PASSWORD).
@@ -117,7 +126,7 @@ For a real deployment, move storage to Firestore or Cloud SQL and media to Cloud
 app/
   main.py        FastAPI routes: webhook, website, simulator, PDF links
   chat.py        conversation logic, shared by WhatsApp, simulator and future voice line
-  ai.py          Gemini calls with JSON schemas, plus offline parser
+  ai.py          Gemini agent with tools, JSON schemas, number guard, offline parser
   ledger.py      hash-chained entries and verification
   records.py     totals, unpaid days, welfare eligibility
   pdfs.py        complaint and work-record PDFs
@@ -125,7 +134,7 @@ app/
   db.py          SQLite schema and queries
   templates/     website pages
 scripts/seed_demo.py
-tests/           ledger, records, parser, full conversation, webhook, website
+tests/           ledger, records, parser, agent tool calls, full conversation, webhook, website
 ```
 
 ## Roadmap

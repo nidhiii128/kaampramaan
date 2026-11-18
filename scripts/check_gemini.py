@@ -4,14 +4,18 @@ Usage:
   python -m scripts.check_gemini                      # text messages only
   python -m scripts.check_gemini --audio note.ogg     # also a voice note
   python -m scripts.check_gemini --image board.jpg    # also a site board photo
+  python -m scripts.check_gemini --agent              # also the tool-calling agent
 """
 import argparse
 import mimetypes
+import os
 import sys
-from datetime import date
+import tempfile
 
 from app.ai import AI
+from app.chat import Bot, Inbound
 from app.config import load_settings
+from app.db import Database
 
 TEXTS = [
     "Aaj Ramesh thekedar ke saath kaam kiya, 700 rupaye abhi nahi mile",
@@ -25,6 +29,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--audio")
     p.add_argument("--image")
+    p.add_argument("--agent", action="store_true")
     args = p.parse_args()
 
     s = load_settings()
@@ -62,6 +67,41 @@ def main():
         mime = mimetypes.guess_type(args.image)[0] or "image/jpeg"
         with open(args.image, "rb") as f:
             print(f"\n> board photo {args.image}\n  {ai.read_board(f.read(), mime).model_dump()}")
+
+    if args.agent:
+        check_agent(ai, today)
+
+
+AGENT_TEXTS = [
+    "Aaj Ramesh thekedar ke saath kaam kiya, 700 rupaye abhi nahi mile",
+    "Kal bhi kaam kiya 700, aur Ramesh ne aaj 500 diye",
+    "Kitna baaki hai?",
+    "Ramesh paisa nahi de raha, shikayat chahiye",
+]
+
+
+def check_agent(ai, today):
+    """Run the tool-calling agent on sample messages against a throwaway database."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Database(os.path.join(tmp, "kp.db"))
+        site = db.create_site(project="Demo site", employer_type="small", contractor="Ramesh")
+        db.create_worker("demo", name="Raju", state="active", site_id=site)
+        bot = Bot(db=db, ai=ai, media_dir=os.path.join(tmp, "media"), public_base_url="http://localhost",
+                  today_fn=lambda: today)
+        real_run = ai.run_agent
+
+        def traced(execute, **kw):
+            def logged(name, a):
+                result = execute(name, a)
+                print(f"  tool {name}({a}) -> {result}")
+                return result
+            return real_run(logged, **kw)
+
+        ai.run_agent = traced
+        for t in AGENT_TEXTS:
+            print(f"\n> {t}")
+            for r in bot.handle(Inbound(phone="demo", text=t)):
+                print(f"  reply: {r.text}" + (f"  [{r.document_name}]" if r.document_name else ""))
 
 
 if __name__ == "__main__":
