@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Log work for a group</h1>
+<p class="muted">For workers who have no phone. A volunteer or site supervisor logs everyone who worked that day.</p>
+
+{% if done %}<p class="ok">Saved a day of work for: {{ done|join(", ") }}.</p>{% endif %}
+
+<form method="post" action="/volunteer" class="card grid">
+  <label>Workers (one per line: name, village)
+    <textarea name="workers" rows="6" required placeholder="Mohan Lal, Gaya&#10;Suresh Yadav, Ara"></textarea>
+  </label>
+  <label>Site
+    <select name="site_id">
+      <option value="">New site (type name below)</option>
+      {% for s in sites %}<option value="{{ s.id }}">{{ s.project or "Site " ~ s.id }}{% if s.principal_employer %} ({{ s.principal_employer }}){% endif %}</option>{% endfor %}
+    </select>
+  </label>
+  <label>New site name <input name="new_site" placeholder="Only if the site is not in the list"></label>
+  <label>Date <input type="date" name="work_date" value="{{ today }}" max="{{ today }}" required></label>
+  <label>Day's wage (Rs.) <input type="number" name="wage" min="1" max="100000" required></label>
+  <label>Contractor <input name="contractor"></label>
+  <label class="check"><input type="checkbox" name="paid" value="true"> Wage was paid today</label>
+  <button>Save</button>
+</form>
+{% endblock %}

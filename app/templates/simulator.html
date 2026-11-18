@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Chat simulator</h1>
+<p class="muted">Try the WhatsApp conversation without a WhatsApp number. Messages go through exactly the same code as the real webhook.
+{% if not ai %}Gemini is off, so type messages; voice notes and board photos need GEMINI_API_KEY.{% endif %}</p>
+
+<div class="phone">
+  <label>Worker's phone number <input id="phone" value="919900000001"></label>
+  <div id="chat" class="chat"></div>
+  <form id="send" class="composer">
+    <input id="text" placeholder="Type a message, e.g. Worked with Ramesh today, 700 not paid yet" autocomplete="off">
+    <label class="file" title="Attach a voice note or photo">+<input id="file" type="file" accept="audio/*,image/*"></label>
+    <button>Send</button>
+  </form>
+  <div class="hints">
+    {% for h in ["Hi", "Raju Kumar, Bhojpur", "skip", "Worked with Ramesh today, 700 not paid yet", "Ramesh paid me 5000", "How many days?", "Ramesh has not paid me", "registration"] %}
+    <button type="button" class="hint">{{ h }}</button>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+const chat = document.getElementById('chat');
+function bubble(text, who, link) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + who;
+  d.textContent = text;
+  if (link) {
+    const a = document.createElement('a');
+    a.href = link; a.target = '_blank'; a.textContent = 'Open PDF';
+    d.appendChild(document.createElement('br')); d.appendChild(a);
+  }
+  chat.appendChild(d); chat.scrollTop = chat.scrollHeight;
+}
+async function send(text) {
+  const file = document.getElementById('file').files[0];
+  if (!text && !file) return;
+  bubble(text || ('[' + file.name + ']'), 'me');
+  const fd = new FormData();
+  fd.append('phone', document.getElementById('phone').value);
+  fd.append('text', text);
+  if (file) fd.append('file', file);
+  document.getElementById('file').value = '';
+  const r = await fetch('/simulator/send', {method: 'POST', body: fd});
+  if (!r.ok) { bubble('Error ' + r.status, 'bot'); return; }
+  for (const m of await r.json()) bubble(m.text, 'bot', m.document_url);
+}
+document.getElementById('send').addEventListener('submit', e => {
+  e.preventDefault();
+  const t = document.getElementById('text');
+  send(t.value.trim()); t.value = '';
+});
+document.querySelectorAll('.hint').forEach(b => b.addEventListener('click', () => send(b.textContent)));
+</script>
+{% endblock %}

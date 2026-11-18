@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}{{ w.name }} - KaamPramaan{% endblock %}
+{% block content %}
+<p><a href="/dashboard">&larr; All workers</a></p>
+<h1>{{ w.name or "(not registered yet)" }}</h1>
+<p class="muted">{{ w.village or "Village not given" }} &middot; {{ w.phone or "No phone, logged by volunteer" }}</p>
+
+<section class="stats">
+  <div class="stat"><span>{{ s.days_worked }}</span>days worked</div>
+  <div class="stat"><span>Rs. {{ s.earned|rupees }}</span>earned</div>
+  <div class="stat"><span>Rs. {{ s.paid|rupees }}</span>received</div>
+  <div class="stat {% if s.due %}alert{% endif %}"><span>Rs. {{ s.due|rupees }}</span>due ({{ s.unpaid_days|length }} days)</div>
+  <div class="stat"><span>{{ s.days_last_12_months }}/90</span>days for welfare board</div>
+</section>
+
+<div class="row">
+  <div class="card">
+    <h2>Record check</h2>
+    {% if chain.ok %}
+      <p class="ok">All {{ chain.entries_checked }} entries are intact.</p>
+      <p class="muted">Each entry is hash-linked to the one before it, so any later change is detected.</p>
+    {% else %}
+      <p class="bad">Problem at entry {{ chain.broken_at_seq }}: {{ chain.reason }}.</p>
+    {% endif %}
+    <form method="post" action="/workers/{{ w.id }}/complaint"><button {% if not s.due %}disabled{% endif %}>Download wage complaint (PDF)</button></form>
+    <form method="post" action="/workers/{{ w.id }}/work-record"><button class="secondary">Download work record for welfare board (PDF)</button></form>
+  </div>
+
+  {% if site %}
+  <div class="card">
+    <h2>Site</h2>
+    <form method="post" action="/sites/{{ site.id }}" class="grid">
+      <input type="hidden" name="worker_id" value="{{ w.id }}">
+      <label>Project <input name="project" value="{{ site.project or '' }}"></label>
+      <label>Principal employer <input name="principal_employer" value="{{ site.principal_employer or '' }}"></label>
+      <label>Contractor <input name="contractor" value="{{ site.contractor or '' }}"></label>
+      <label>Site type
+        <select name="employer_type">
+          {% for t, label in [('government','Government project'),('developer','Private developer'),('small','Small private site'),('unknown','Not known')] %}
+          <option value="{{ t }}" {% if site.employer_type == t %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button class="secondary">Save site</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+
+<h2>All entries</h2>
+<table>
+  <thead><tr><th>#</th><th>Date</th><th>Type</th><th>Contractor</th><th>Amount</th><th>Paid</th><th>Co-workers same day</th><th>Via</th><th>What was said</th><th>Reference</th></tr></thead>
+  <tbody>
+  {% for e in entries|reverse %}
+    <tr>
+      <td>{{ e.seq }}</td>
+      <td>{{ e.work_date }}</td>
+      <td>{{ "Work" if e.kind == "work" else "Payment" }}</td>
+      <td>{{ e.contractor or "-" }}</td>
+      <td>Rs. {{ e.amount|rupees }}</td>
+      <td>{% if e.kind == "work" %}{{ "Yes" if e.paid else "No" }}{% else %}-{% endif %}</td>
+      <td>{% if e.kind == "work" %}{{ corr.get(e.id, 0) }}{% else %}-{% endif %}</td>
+      <td>{{ e.source }}</td>
+      <td class="said">{{ e.transcript or "" }}</td>
+      <td><code title="{{ e.hash }}">{{ e.hash[:10] }}</code></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="10">No entries yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

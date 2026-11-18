@@ -1,0 +1,54 @@
+:root {
+  --ink: #1f2328; --muted: #5f6368; --line: #e3e6ea; --bg: #f6f7f9;
+  --blue: #1a73e8; --green: #188038; --red: #c5221f; --amber: #b06000;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--ink); background: var(--bg); }
+.top { display: flex; align-items: center; gap: 24px; padding: 12px 24px; background: #fff; border-bottom: 1px solid var(--line); }
+.brand { font-weight: 700; font-size: 18px; color: var(--ink); text-decoration: none; }
+.top nav a { margin-right: 16px; color: var(--muted); text-decoration: none; }
+.top nav a:hover { color: var(--blue); }
+main { max-width: 1180px; margin: 0 auto; padding: 24px; }
+h1 { margin: 0 0 8px; font-size: 26px; }
+h2 { font-size: 18px; margin: 28px 0 10px; }
+a { color: var(--blue); }
+.muted { color: var(--muted); }
+.note { background: #fef7e0; border: 1px solid #f9e2a6; padding: 8px 12px; border-radius: 8px; }
+.ok { color: var(--green); font-weight: 600; }
+.bad { color: var(--red); font-weight: 600; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 16px 0 20px; }
+.stat { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; color: var(--muted); font-size: 13px; }
+.stat span { display: block; font-size: 22px; font-weight: 700; color: var(--ink); }
+.stat.alert span { color: var(--red); }
+table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { background: #f1f3f4; font-size: 13px; color: var(--muted); font-weight: 600; }
+td.said { max-width: 260px; color: var(--muted); font-size: 13px; }
+code { font-size: 12px; color: var(--muted); }
+.tag { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: #eceff1; color: var(--muted); margin-left: 4px; }
+.tag.government { background: #e8f0fe; color: var(--blue); }
+.tag.developer { background: #fce8e6; color: var(--red); }
+.tag.small { background: #fef7e0; color: var(--amber); }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+.card h2 { margin-top: 0; }
+.grid { display: grid; gap: 12px; }
+label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+label.check { display: flex; align-items: center; gap: 8px; }
+input, select, textarea { font: inherit; padding: 8px 10px; border: 1px solid #c9ced4; border-radius: 8px; background: #fff; color: var(--ink); }
+button { font: inherit; padding: 9px 14px; border: 0; border-radius: 8px; background: var(--blue); color: #fff; cursor: pointer; margin: 6px 6px 0 0; }
+button.secondary { background: #e8f0fe; color: var(--blue); }
+button:disabled { background: #c9ced4; cursor: not-allowed; }
+.phone { max-width: 460px; }
+.chat { height: 440px; overflow-y: auto; background: #e9e4dc; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.msg { max-width: 85%; padding: 8px 11px; border-radius: 10px; white-space: pre-wrap; font-size: 14px; }
+.msg.me { align-self: flex-end; background: #d9fdd3; }
+.msg.bot { align-self: flex-start; background: #fff; }
+.composer { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
+.composer input[type=text], .composer #text { flex: 1; }
+.composer button { margin: 0; }
+.file { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 8px; background: #fff; border: 1px solid #c9ced4; font-size: 20px; cursor: pointer; color: var(--ink); }
+.file input { display: none; }
+.hints { margin-top: 10px; }
+.hints .hint { background: #fff; color: var(--ink); border: 1px solid var(--line); font-size: 13px; padding: 5px 9px; }
+@media (max-width: 800px) { .row { grid-template-columns: 1fr; } table { font-size: 13px; } }
