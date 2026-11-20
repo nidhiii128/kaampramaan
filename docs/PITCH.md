@@ -4,64 +4,104 @@ Fill every `[FILL]` with a real fact before presenting. Do not present a number 
 
 ## One line
 
-A construction worker sends one WhatsApp voice note a day. We keep a tamper-evident record of it, and when a
-contractor does not pay, that record becomes the complaint.
+Welfare boards hold tens of thousands of crore for construction workers but can only pay registered ones, and
+registration needs proof of 90 days of work that most workers cannot produce. KaamPramaan makes that proof: a one-tap
+QR check-in at the site gate, confirmed by the supervisor, ready for the board.
+
+## The numbers (sourced, say them exactly)
+
+- ₹70,744 crore of construction welfare cess unspent (Labour Ministry RTI reply, January 2025).
+- Registration and renewal need 90 days of construction work in the preceding 12 months. The rule continues under the
+  Code on Social Security, in force since 21 Nov 2025.
+- CAG audits of state boards report gaps in registering workers and establishments. `[FILL: one line from the CAG
+  report for the state you pitch in]`
 
 ## 3-minute structure
 
 | Time | Beat | Say / show |
 |---|---|---|
-| 0:00 | A person, not a statistic | One named worker (real if you can, else a clearly labelled composite). Cash wages, no paper, contractor stops paying, he has nothing to show. |
-| 0:25 | Why now | The Labour Codes came into force on 21 Nov 2025, so registration and wage-payment rules are being rebuilt right now. `[FILL: one sourced line on what changed for construction workers]` |
+| 0:00 | A person | One named worker (real if you can, else clearly labelled as a composite). He worked 8 months on a tower. The board form asks for 90 days of proof, and the contractor won't sign. The pension, accident cover and his daughter's scholarship are all out of reach. |
+| 0:25 | The money | ₹70,744 crore collected for workers like him, unspent. The bottleneck is not money, it is proof. |
 | 0:45 | Live demo (90 s) | See "Demo script" below. |
-| 2:15 | Why this can work | WhatsApp = nothing to install. Voice = no literacy needed. Gemini hears Hindi/Bhojpuri/Bengali audio directly. Money maths is plain Python, never the model. |
-| 2:40 | Who pays | See "Business model". |
-| 2:55 | Ask | `[FILL: pilot partner, mentorship, credits, intro to a union/NGO]` |
+| 2:15 | Why it works | Nothing to install: a QR poster and WhatsApp. The employer side vouches without new software. Gemini reads the paper register the site already keeps. Every day is tamper-evident. |
+| 2:35 | Who pays | The board, from money it already has (see "Business model"). |
+| 2:50 | Ask | `[FILL: pilot district / board intro, incubator seat, cloud credits]` |
 
-## Demo script (rehearse this, it is the whole pitch)
+## Demo script (rehearse it; the demo is the pitch)
 
-0. Judges can do this themselves: open `/demo` (set `KP_DEMO_MODE=1`), no login, microphone built in, the stored record shown beside the chat.
-1. `/demo` or real WhatsApp: voice note "Aaj Ramesh ke saath kaam kiya, 700, abhi nahi mile". Reply shows days, amount due and a `Ref:`.
-2. Say it wrong on purpose ("7000"), then send "galat, 700 tha". Show it cancelled and re-logged in one message. Point out: nothing was deleted.
-3. "Ramesh ne paisa nahi diya" -> complaint PDF arrives. Open it: unpaid days, co-worker counts, reference codes, "Verified: all entries intact".
-4. **Tamper moment.** On `/demo` press **Change a past entry**: an entry is edited behind the system's back and the record check turns red and names the broken entry. This is the proof that the record cannot be quietly rewritten. Press **Put it back** to heal it.
-5. "Kaam chahiye" -> top 3 openings, one with a warning that workers reported unpaid wages from that contractor.
-6. Staff dashboard: the complaint is already a tracked case. Mark it filed, record Rs. 1,400 recovered: the worker's balance drops, they get a WhatsApp message, and the **wages recovered** tile moves. That is the outcome the whole system exists for.
-7. Press **Listen** on a reply (or send a voice note with `KP_VOICE_REPLIES=1`): Gemini answers in speech, for workers who do not read comfortably.
+0. Open `/demo` (`KP_DEMO_MODE=1`). No login.
+1. **Scan the site QR.** "This poster is at the gate. One tap in WhatsApp, and he is marked present."
+2. **Supervisor: MUSTER, then CONFIRM.** "The supervisor sees today's list and confirms it. Now the day counts."
+3. **Add 89 past days**, then send "registration". Open the PDF: the pre-filled board application, with all 90 days,
+   who vouched for each, and the reference codes. "The officer fills identity and bank details at the counter."
+4. **Change a past entry.** The record check turns red. "Nobody, including us, can quietly add days."
+5. Switch to the seeded staff site (`python -m scripts.seed_demo`), `/board`: ready to register, needs confirmation,
+   renewals due with the reminder button, records to check.
+6. `/sites/<id>`: upload a photo of a handwritten muster register. Gemini reads it, you correct one row, and import.
+   "Paper registers sites already keep become verified days."
 
-If WhatsApp or Gemini fails on stage: the simulator and the offline parser run the same code path. Keep a screen recording as backup.
+Backup: a screen recording of steps 1 to 6. Everything except voice and the register photo works without a Gemini key.
 
-## Business model (what to say, not yet validated)
+## Business model
 
-Workers never pay. Payers are the people who need a trustworthy record:
+Workers never pay.
 
-- **Principal employers and developers.** Under the new codes they carry compliance and liability for contractors' wage defaults. A per-site subscription gives them a verifiable muster record and early warning on contractors who are not paying.
-- **CSR funds, unions, NGOs.** Grant-funded dashboard seats; they already run legal-aid and welfare-registration drives and currently collect this by hand.
-- **State welfare boards.** Cleaner registration evidence, fewer rejected applications. `[FILL: only claim this after talking to one]`
-- **Lenders and insurers (later).** A worker-owned income and days-worked record is something informal workers cannot produce today.
+- **State welfare boards (primary).** They collect the cess, are audited on registration and spending, and lose money
+  to fake registrations. We sell a per-registered-worker or per-site fee, procured through GeM after a pilot.
+  `[FILL: only claim interest after a conversation with a board official]`
+- **Facilitation partners: NGOs, unions, CSC operators.** They already run registration camps. They use the board
+  view and register-photo import, funded by the board or by CSR.
+- **Principal employers and developers (later).** Under the Code, employers must register eligible workers. A
+  supervisor's CONFIRM is the cheapest compliance record they can keep.
 
-Unit cost to know before you are asked: Gemini audio + tool calls per worker per month, and WhatsApp conversation charges. `[FILL: measured numbers from a day of testing]`
+Unit cost to know before you are asked: WhatsApp conversation charges per worker per month (check-ins are
+user-initiated, which is the cheaper category), Gemini cost per register photo and per voice note. `[FILL: measured
+from one day of testing]`
+
+## Funding path
+
+| Stage | Source | What we need for it |
+|---|---|---|
+| Now | Buildathon, Smart India Hackathon (labour ministry / state labour department problem statements), college incubator | Working demo, this repo |
+| Prototype | DST NIDHI-PRAYAS, MeitY TIDE 2.0 (through host incubators), state startup grants | Incubator seat, short proposal |
+| Pilot | MoU with a state labour department or board for one district, run with an NGO or union | One champion official, a partner NGO |
+| Scale | Board procurement through GeM | DPIIT recognition (relaxed turnover and experience rules), pilot results |
+
+Startup India Seed Fund closed to new applications on 31 May 2026. Watch for a new call; do not plan around it.
 
 ## Moat
 
-The record is only useful if it is trusted, so trust is the product: a hash-chained log, cancellations that never delete, a reference the worker holds in WhatsApp, and (once you have it) legal sign-off on the PDFs. The cross-worker contractor payment record is a data asset no single NGO has.
+Trust is the product. Each day is checked in by the worker and vouched for by the employer side. Attestations are
+hash-linked to the entries they confirm, and every register photo is fingerprinted. And the data across sites (who
+worked where, on which days, confirmed by whom) is something no single NGO or contractor has.
 
 ## Hard questions, straight answers
 
-- **Is this admissible?** It is the worker's own contemporaneous account plus a tamper-evident log and corroboration from co-workers. It supports a complaint to a labour officer; it does not replace an employer's records. A labour lawyer should review the PDFs. The welfare PDF says "confirm with your state board" instead of citing a repealed Act.
-- **What if the model mishears?** Every save is echoed back with the amount and a one-word undo. The model never does the arithmetic, and a reply containing a number the ledger did not produce is discarded.
-- **What if the operator edits the database?** Locally the chain would break (shown in the demo). A server operator could rebuild a whole chain, which is why each entry's reference is also sent to the worker on WhatsApp. Next step: publish a daily root hash.
-- **Retaliation?** Complaints are generated only on the worker's request; the contractor is not notified. Contractor warnings are worded as reports, need 2+ workers and 3+ unpaid days, and are not shown with names of the workers. Stronger dispute and safety handling is on the roadmap.
-- **Privacy?** Phone, village, GPS and voice notes are sensitive. Needed before a real pilot: explicit consent in the first message, per-NGO accounts, an audit log, retention limits.
-- **Why WhatsApp?** It is already on their phone. Keypad-phone workers are served by volunteer logging now and a missed-call voice line next.
-- **How do you stop fake reports?** Co-worker corroboration on site and date, board photo for the site, volunteer-attested entries marked as such. Sybil resistance is open work.
+- **Why would a supervisor confirm?** It takes one WhatsApp message a day, and under the Code the employer side has to
+  register eligible workers anyway. Where a supervisor won't, the paper register photo or a co-worker-backed day is the
+  fallback, and the board decides which levels it accepts.
+- **Can a supervisor and worker collude on fake days?** The QR check-in is per site and day. The board view flags the
+  same person at two sites on one day and duplicate names. Every confirmation names the person who gave it. Fake
+  certificates exist today too; the difference is that ours leave a trail.
+- **What if Gemini misreads a register?** Nothing is saved until a person checks each row against the photo. Impossible
+  dates are dropped, and every imported day carries the photo's fingerprint.
+- **Is the application valid?** It is a pre-filled form plus a work certificate. The officer still checks identity and
+  originals. A labour lawyer and one board official should review the format for the pilot state.
+- **Privacy?** No Aadhaar or bank numbers are stored. Before the pilot: consent in the first message, per-board
+  accounts, an audit log, retention limits, hosting in India (Cloud Run / Cloud SQL in asia-south1).
+- **Keypad phones?** Workers without smartphones come in through the register photo or volunteer logging now, and a
+  missed-call line next.
+- **Why not just e-Shram?** e-Shram registers a person. It does not prove 90 days of construction work, which the board
+  still needs. We link to the UAN; we don't replace it.
 
 ## Built on Google
 
-Gemini audio understanding (no separate speech-to-text), Gemini function calling for the agent (8 tools), Gemini vision for site boards, Gemini embeddings for work matching, Gemini text-to-speech for voice replies, Cloud Run for the app. Extraction accuracy is measured by `scripts/eval_extraction.py` (offline baseline 44% whole-message; fill in the Gemini number after running it with your key). Scale path: Cloud SQL or Firestore for the ledger, Cloud Storage for voice notes and PDFs.
+Gemini vision (muster registers, site boards), audio understanding, function calling (8-tool agent), structured
+output, embeddings and text-to-speech. Cloud Run in asia-south1. Scale path: Cloud SQL and Cloud Storage.
 
-## Pilot plan (the first 30 days after the buildathon)
+## Pilot plan (first 60 days after the buildathon)
 
-1. One NGO or union, 30-50 workers on 1-2 sites.
-2. Measure: share of workers still logging after day 7, days logged per worker, complaints generated, rupees recovered.
-3. One labour lawyer reviews both PDFs. One welfare-board official reacts to the work record.
+1. One NGO or union and 3 to 5 sites in one district; posters at the gates; supervisors on WhatsApp.
+2. Measure: check-in rate after week 2, share of days confirmed by supervisors, register photos imported and rows
+   corrected, workers reaching 90 days, applications submitted, registrations granted.
+3. One board official reviews the application format. One labour lawyer reviews the wording.

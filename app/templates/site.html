@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}{{ site.project or "Site" }} - KaamPramaan{% endblock %}
+{% block content %}
+<p><a href="/sites">&larr; All sites</a></p>
+<h1>{{ site.project or "Site " ~ site.id }}</h1>
+<p class="muted">{{ site.principal_employer or "Principal employer not recorded" }}{% if site.contractor %} &middot; contractor {{ site.contractor }}{% endif %}{% if site.location %} &middot; {{ site.location }}{% endif %}</p>
+
+<div class="row">
+  <div class="card">
+    <h2>Check-in</h2>
+    <p>Site code <code class="big">{{ site.code }}</code></p>
+    <p class="muted">Workers scan the poster, or send <b>{{ check_in_text }}</b> on WhatsApp.</p>
+    <a class="button" href="/sites/{{ site.id }}/poster">Open printable QR poster</a>
+  </div>
+  <form method="post" action="/sites/{{ site.id }}/supervisor" class="card grid">
+    <h2>Supervisor</h2>
+    <p class="muted">The supervisor sends MUSTER on WhatsApp to see today's check-ins and CONFIRM to vouch for them.</p>
+    <label>Name <input name="supervisor_name" value="{{ site.supervisor_name or '' }}"></label>
+    <label>WhatsApp number <input name="supervisor_phone" inputmode="tel" value="{{ site.supervisor_phone or '' }}"></label>
+    <button class="secondary">Save supervisor</button>
+  </form>
+</div>
+
+<h2 id="muster">Attendance on {{ day.strftime('%d %b %Y') }}</h2>
+<nav class="daynav" aria-label="Change day">
+  <a href="?day={{ prev }}">&larr; Previous day</a>
+  {% if day < today %}<a href="?day={{ next }}">Next day &rarr;</a>{% endif %}
+</nav>
+<form method="post" action="/sites/{{ site.id }}/confirm">
+  <input type="hidden" name="day" value="{{ day.isoformat() }}">
+  <div class="table-wrap"><table>
+    <caption class="sr-only">Workers recorded at this site on {{ day.isoformat() }}</caption>
+    <thead><tr><th scope="col">Confirm</th><th scope="col">Worker</th><th scope="col">How recorded</th><th scope="col">Vouched for by</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <td>{% if r.roles %}<span class="ok" aria-label="already confirmed">&#10003;</span>{% else %}<label class="check"><input type="checkbox" name="entry_id" value="{{ r.id }}" checked><span class="sr-only">Confirm {{ r.worker_name }}</span></label>{% endif %}</td>
+        <td><a href="/workers/{{ r.worker_id }}">{{ r.worker_name or "(unnamed)" }}</a> <small class="muted">{{ r.worker_village or "" }}</small></td>
+        <td>{{ {"site_qr": "QR check-in", "muster_photo": "Register photo", "volunteer": "Volunteer"}.get(r.source, r.source) }}</td>
+        <td>{{ (r.roles or "-").replace("muster_register", "muster register").replace(",", ", ") }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="4">Nobody recorded at this site on this day.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% if rows %}<button>Confirm ticked workers as officer</button>{% endif %}
+</form>
+
+<h2>Paper muster register</h2>
+<p class="muted">Upload a photo of the register page. {% if ai %}Gemini reads the names and days marked present;{% else %}Reading photos needs GEMINI_API_KEY;{% endif %} you check every row before anything is saved. Each imported day carries the photo's SHA-256.</p>
+<form method="post" action="/sites/{{ site.id }}/muster" enctype="multipart/form-data" class="inline">
+  <label class="sr-only" for="photo">Register photo</label>
+  <input id="photo" type="file" name="file" accept="image/*" capture="environment" required>
+  <button>Read register photo</button>
+</form>
+{% if imports %}
+<ul>{% for m in imports %}<li><a href="/muster/{{ m.id }}">Photo #{{ m.id }}</a> &middot; {{ m.created_at[:10] }} &middot; {% if m.status == "draft" %}<b>needs review</b>{% else %}{{ m.status }}{% endif %}</li>{% endfor %}</ul>
+{% endif %}
+{% endblock %}

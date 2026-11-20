@@ -78,8 +78,9 @@ def _insert(c, e: NewEntry) -> dict:
     }
     fields["hash"] = entry_hash(fields)
     cols = ", ".join(fields)
-    c.execute(f"INSERT INTO entries ({cols}) VALUES ({', '.join('?' for _ in fields)})",
-              tuple(fields.values()))
+    cur = c.execute(f"INSERT INTO entries ({cols}) VALUES ({', '.join('?' for _ in fields)})",
+                    tuple(fields.values()))
+    fields["id"] = cur.lastrowid          # not hashed: the row id is storage, not part of the record
     return fields
 
 

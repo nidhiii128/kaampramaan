@@ -1,5 +1,6 @@
 """SQLite storage. One connection per call keeps it safe under FastAPI's thread pool."""
 import os
+import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -121,7 +122,55 @@ CREATE TABLE IF NOT EXISTS recommendations (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_recommendations_worker ON recommendations (worker_id, created_at);
+
+-- Someone other than the worker vouching for a working day: the site supervisor (WhatsApp CONFIRM), the
+-- employer's own paper muster register (photo read by Gemini, reviewed by staff) or a board / NGO officer.
+-- Ledger entries are never edited; an attestation is a separate row, hash-linked to the entry it vouches for.
+CREATE TABLE IF NOT EXISTS attestations (
+    id INTEGER PRIMARY KEY,
+    entry_id INTEGER NOT NULL REFERENCES entries(id),
+    worker_id INTEGER NOT NULL REFERENCES workers(id),
+    role TEXT NOT NULL CHECK (role IN ('supervisor', 'muster_register', 'officer')),
+    attester TEXT NOT NULL,
+    evidence_sha256 TEXT,              -- e.g. SHA-256 of the muster register photo
+    created_at TEXT NOT NULL,
+    hash TEXT NOT NULL,                -- SHA-256 over the entry's hash and the fields above
+    UNIQUE (entry_id, role)
+);
+CREATE INDEX IF NOT EXISTS idx_attestations_worker ON attestations (worker_id);
+
+-- A photo of a site's paper attendance register, read by Gemini into rows, reviewed by staff, then imported
+CREATE TABLE IF NOT EXISTS muster_imports (
+    id INTEGER PRIMARY KEY,
+    site_id INTEGER NOT NULL REFERENCES sites(id),
+    photo_path TEXT NOT NULL,
+    photo_sha256 TEXT NOT NULL,
+    extracted TEXT NOT NULL,           -- JSON: {"month", "year", "rows": [{"name", "days": [...]}], "notes"}
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'imported', 'rejected')),
+    uploaded_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    reviewed_by TEXT,
+    reviewed_at TEXT
+);
 """
+
+# Columns added after the first release. Old databases get them on start, then the indexes that need them.
+ADDED_COLUMNS = {
+    "cases": (("amount_claimed", "INTEGER"), ("amount_recovered", "INTEGER NOT NULL DEFAULT 0"), ("updated_at", "TEXT")),
+    "sites": (("code", "TEXT"), ("supervisor_name", "TEXT"), ("supervisor_phone", "TEXT")),
+    "workers": (("board_reg_no", "TEXT"), ("board_reg_date", "TEXT"), ("application_at", "TEXT")),
+}
+POST_MIGRATION = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_code ON sites (code);
+CREATE INDEX IF NOT EXISTS idx_sites_supervisor ON sites (supervisor_phone);
+"""
+SITE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # no 0/O or 1/I, so a code can be typed from a poster
+SITE_CODE_LEN = 6
+ATTEST_ROLES = ("supervisor", "muster_register", "officer")
+
+
+def new_site_code() -> str:
+    return "".join(secrets.choice(SITE_CODE_ALPHABET) for _ in range(SITE_CODE_LEN))
 
 
 WAGE_CASE_STATUSES = ("generated", "filed", "resolved", "closed")
@@ -144,7 +193,10 @@ class Database:
                 conn.execute("DROP INDEX IF EXISTS idx_entries_site_date")
                 conn.execute("ALTER TABLE entries RENAME TO entries_old")
             conn.executescript(SCHEMA)
-            self._add_missing_case_columns(conn)
+            self._add_missing_columns(conn)
+            conn.executescript(POST_MIGRATION)
+            for row in conn.execute("SELECT id FROM sites WHERE code IS NULL").fetchall():
+                conn.execute("UPDATE sites SET code = ? WHERE id = ?", (self._free_code(conn), row["id"]))
             if old:  # databases created before 'void' entries existed: copy rows over, hashes stay valid
                 cols = ("id, worker_id, seq, kind, work_date, site_id, contractor, amount, paid, source, transcript, "
                         "media_path, media_sha256, latitude, longitude, recorded_at, prev_hash, hash")
@@ -152,12 +204,19 @@ class Database:
                 conn.execute("DROP TABLE entries_old")
 
     @staticmethod
-    def _add_missing_case_columns(conn):
-        have = {r["name"] for r in conn.execute("PRAGMA table_info(cases)")}
-        for col, ddl in (("amount_claimed", "INTEGER"), ("amount_recovered", "INTEGER NOT NULL DEFAULT 0"),
-                         ("updated_at", "TEXT")):
-            if col not in have:
-                conn.execute(f"ALTER TABLE cases ADD COLUMN {col} {ddl}")
+    def _add_missing_columns(conn):
+        for table, columns in ADDED_COLUMNS.items():
+            have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for col, ddl in columns:
+                if col not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
+    @staticmethod
+    def _free_code(conn) -> str:
+        while True:
+            code = new_site_code()
+            if not conn.execute("SELECT 1 FROM sites WHERE code = ?", (code,)).fetchone():
+                return code
 
     @staticmethod
     def _old_entries_table(conn) -> bool:
@@ -196,7 +255,8 @@ class Database:
             return cur.lastrowid
 
     def update_worker(self, worker_id: int, **fields):
-        allowed = {"name", "village", "site_id", "state", "last_wage", "last_lat", "last_lon"}
+        allowed = {"name", "village", "site_id", "state", "last_wage", "last_lat", "last_lon",
+                   "board_reg_no", "board_reg_date", "application_at"}
         bad = set(fields) - allowed
         if bad:
             raise ValueError(f"unknown worker fields: {bad}")
@@ -217,14 +277,134 @@ class Database:
 
     # ---- sites ----
     def create_site(self, project=None, principal_employer=None, employer_type="unknown",
-                    contractor=None, location=None, board_photo=None) -> int:
+                    contractor=None, location=None, board_photo=None,
+                    supervisor_name=None, supervisor_phone=None) -> int:
         with self.connect() as c:
             cur = c.execute(
-                """INSERT INTO sites (project, principal_employer, employer_type, contractor,
-                   location, board_photo, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (project, principal_employer, employer_type, contractor, location, board_photo, now_iso()),
+                """INSERT INTO sites (project, principal_employer, employer_type, contractor, location, board_photo,
+                   code, supervisor_name, supervisor_phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (project, principal_employer, employer_type, contractor, location, board_photo,
+                 self._free_code(c), supervisor_name, supervisor_phone, now_iso()),
             )
             return cur.lastrowid
+
+    def get_site_by_code(self, code: str):
+        with self.connect() as c:
+            return c.execute("SELECT * FROM sites WHERE code = ?", ((code or "").strip().upper(),)).fetchone()
+
+    def get_site_by_supervisor(self, phone: str):
+        """The most recent site this phone supervises, or None."""
+        if not phone:
+            return None
+        with self.connect() as c:
+            return c.execute("SELECT * FROM sites WHERE supervisor_phone = ? ORDER BY id DESC LIMIT 1",
+                             (phone,)).fetchone()
+
+    def set_supervisor(self, site_id: int, name: str | None, phone: str | None):
+        with self.connect() as c:
+            c.execute("UPDATE sites SET supervisor_name = ?, supervisor_phone = ? WHERE id = ?",
+                      (name or None, phone or None, site_id))
+
+    def list_sites(self, today: str):
+        """Sites with how many workers are attached and how many checked in today (demo sites left out)."""
+        with self.connect() as c:
+            return c.execute(
+                """SELECT s.*,
+                     (SELECT COUNT(*) FROM workers w WHERE w.site_id = s.id) AS workers,
+                     (SELECT COUNT(DISTINCT e.worker_id) FROM entries e WHERE e.site_id = s.id AND e.kind = 'work'
+                        AND e.work_date = ?) AS today_count
+                   FROM sites s
+                   WHERE NOT EXISTS (SELECT 1 FROM workers w WHERE w.site_id = s.id AND w.phone LIKE 'demo-%')
+                   ORDER BY s.created_at DESC""", (today,)).fetchall()
+
+    def site_day(self, site_id: int, work_date: str):
+        """Live (not cancelled) work entries at a site on one date, one per worker, with who has vouched for them."""
+        with self.connect() as c:
+            rows = c.execute(
+                """SELECT e.*, w.name AS worker_name, w.village AS worker_village, w.phone AS worker_phone,
+                     (SELECT group_concat(a.role) FROM attestations a WHERE a.entry_id = e.id) AS roles
+                   FROM entries e JOIN workers w ON w.id = e.worker_id
+                   WHERE e.site_id = ? AND e.work_date = ? AND e.kind = 'work'
+                     AND NOT EXISTS (SELECT 1 FROM entries v WHERE v.worker_id = e.worker_id
+                                     AND v.kind = 'void' AND v.void_of = e.seq)
+                   ORDER BY e.id""", (site_id, work_date)).fetchall()
+        seen, out = set(), []
+        for r in rows:
+            if r["worker_id"] not in seen:
+                seen.add(r["worker_id"])
+                out.append(r)
+        return out
+
+    def find_worker_at_site(self, site_id: int, name: str):
+        with self.connect() as c:
+            return c.execute("SELECT * FROM workers WHERE site_id = ? AND lower(trim(name)) = lower(trim(?)) "
+                             "ORDER BY id LIMIT 1", (site_id, name)).fetchone()
+
+    # ---- attestations (someone other than the worker vouching for a working day) ----
+    def attestations_for(self, worker_id: int) -> dict[int, set[str]]:
+        """entry id -> roles that vouched for it"""
+        out: dict[int, set[str]] = {}
+        with self.connect() as c:
+            for r in c.execute("SELECT entry_id, role FROM attestations WHERE worker_id = ?", (worker_id,)):
+                out.setdefault(r["entry_id"], set()).add(r["role"])
+        return out
+
+    def list_attestations(self, worker_id: int):
+        with self.connect() as c:
+            return c.execute(
+                """SELECT a.*, e.hash AS entry_hash, e.work_date FROM attestations a
+                   JOIN entries e ON e.id = a.entry_id WHERE a.worker_id = ? ORDER BY a.id""",
+                (worker_id,)).fetchall()
+
+    # ---- muster register photos ----
+    def create_muster_import(self, site_id, photo_path, photo_sha256, extracted_json, uploaded_by) -> int:
+        with self.connect() as c:
+            cur = c.execute(
+                "INSERT INTO muster_imports (site_id, photo_path, photo_sha256, extracted, uploaded_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)", (site_id, photo_path, photo_sha256, extracted_json, uploaded_by, now_iso()))
+            return cur.lastrowid
+
+    def get_muster_import(self, import_id: int):
+        with self.connect() as c:
+            return c.execute("SELECT * FROM muster_imports WHERE id = ?", (import_id,)).fetchone()
+
+    def list_muster_imports(self, site_id: int | None = None):
+        with self.connect() as c:
+            q = "SELECT m.*, s.project FROM muster_imports m JOIN sites s ON s.id = m.site_id"
+            args: tuple = ()
+            if site_id is not None:
+                q, args = q + " WHERE m.site_id = ?", (site_id,)
+            return c.execute(q + " ORDER BY m.id DESC", args).fetchall()
+
+    def close_muster_import(self, import_id: int, status: str, reviewer: str):
+        if status not in ("imported", "rejected"):
+            raise ValueError("status must be imported or rejected")
+        with self.connect() as c:
+            c.execute("UPDATE muster_imports SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?",
+                      (status, reviewer, now_iso(), import_id))
+
+    # ---- welfare board view: checks that point at fake or duplicate records ----
+    def same_day_two_sites(self):
+        """A worker recorded as working at two different sites on the same date."""
+        with self.connect() as c:
+            return c.execute(
+                f"""SELECT e.worker_id, w.name, e.work_date, COUNT(DISTINCT e.site_id) AS sites
+                    FROM entries e JOIN workers w ON w.id = e.worker_id
+                    WHERE e.kind = 'work' AND e.site_id IS NOT NULL AND {_NOT_DEMO}
+                      AND NOT EXISTS (SELECT 1 FROM entries v WHERE v.worker_id = e.worker_id
+                                      AND v.kind = 'void' AND v.void_of = e.seq)
+                    GROUP BY e.worker_id, e.work_date HAVING COUNT(DISTINCT e.site_id) > 1
+                    ORDER BY e.work_date DESC LIMIT 100""").fetchall()
+
+    def possible_duplicate_people(self):
+        """Two or more worker records with the same name and village: one person registered twice?"""
+        with self.connect() as c:
+            return c.execute(
+                f"""SELECT lower(trim(w.name)) AS key_name, w.name, w.village, group_concat(w.id) AS ids,
+                      COUNT(*) AS n
+                    FROM workers w WHERE w.name IS NOT NULL AND {_NOT_DEMO}
+                    GROUP BY lower(trim(w.name)), lower(trim(coalesce(w.village, '')))
+                    HAVING COUNT(*) > 1 LIMIT 100""").fetchall()
 
     def get_site(self, site_id):
         if site_id is None:
@@ -341,7 +521,7 @@ class Database:
             if not row:
                 return
             wid = row["id"]
-            for table in ("recommendations", "documents", "cases", "entries"):
+            for table in ("recommendations", "documents", "cases", "attestations", "entries"):
                 c.execute(f"DELETE FROM {table} WHERE worker_id = ?", (wid,))
             c.execute("DELETE FROM workers WHERE id = ?", (wid,))
             if row["site_id"]:

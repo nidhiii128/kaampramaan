@@ -2,12 +2,19 @@
 {% block title %}Try KaamPramaan{% endblock %}
 {% block content %}
 <h1>Try KaamPramaan</h1>
-<p class="lead">A worker sends one message a day. The system keeps a record nobody can quietly change, and turns it into a wage complaint when a contractor does not pay. Left: the worker's WhatsApp chat. Right: what the system stores.</p>
+<p class="lead">Construction workers need 90 days of work in a year to register with their state welfare board, and most cannot prove them. Here a worker scans the QR poster at the site gate (one tap on WhatsApp), the supervisor confirms the day's list, and after 90 confirmed days the worker gets a pre-filled board application. Left: the worker's WhatsApp. Right: the supervisor's WhatsApp and what the system stores.</p>
 <p class="note" role="note">Sandbox, no login. Your test data is private to this browser and deleted after 24 hours. Documents are not legal advice.</p>
 
 <div class="demo-grid">
   <section aria-labelledby="chat-h">
-    <h2 id="chat-h">1. Talk to it <span lang="hi">/ Bolkar dekhiye</span></h2>
+    <h2 id="chat-h">1. Worker's WhatsApp <span lang="hi">/ Mazdoor ka phone</span></h2>
+    <div class="scan">
+      <div class="qr small" role="img" aria-label="Site QR code. Scanning it opens WhatsApp with the text {{ check_in_text }}">{{ qr_svg|safe }}</div>
+      <div>
+        <p><b>At the site gate:</b> scanning this poster opens WhatsApp with <code>{{ check_in_text }}</code> typed in.</p>
+        <button type="button" class="hint primary" data-text="{{ check_in_text }}">Scan the site QR</button>
+      </div>
+    </div>
     <div id="chat" class="chat" role="log" aria-live="polite" aria-label="Conversation"></div>
     <form id="send" class="composer">
       <label class="sr-only" for="text">Message</label>
@@ -18,8 +25,8 @@
     <p id="mic-status" class="muted" role="status"></p>
     <div class="hints" role="group" aria-label="Example messages">
       <span class="muted">Try:</span>
-      {% for h in ["Aaj Ramesh ke saath kaam kiya, 700, abhi nahi mile", "Ramesh ne 300 diye", "Kitne din hue?", "Ramesh ne paisa nahi diya", "galat", "registration", "Kaam chahiye"] %}
-      <button type="button" class="hint">{{ h }}</button>
+      {% for h in ["Kitne din hue?", "registration", "Aaj Ramesh ke saath kaam kiya, 700, abhi nahi mile", "Ramesh ne paisa nahi diya", "galat", "Kaam chahiye"] %}
+      <button type="button" class="hint" data-text="{{ h }}">{{ h }}</button>
       {% endfor %}
     </div>
     {% if ai %}<label class="check"><input type="checkbox" id="autospeak"> Read replies aloud (Gemini voice)</label>{% else %}
@@ -27,17 +34,27 @@
   </section>
 
   <section aria-labelledby="ledger-h">
-    <h2 id="ledger-h">2. What the system stored</h2>
+    <h2 id="sup-h">2. Supervisor's WhatsApp</h2>
+    <p class="muted">The site supervisor sees who checked in today and confirms. Only employer-confirmed days count towards the 90.</p>
+    <div class="sup-actions" role="group" aria-labelledby="sup-h">
+      <button type="button" class="secondary" data-sup="MUSTER">Send MUSTER</button>
+      <button type="button" data-sup="CONFIRM">Send CONFIRM</button>
+    </div>
+    <div id="sup" class="chat short" role="log" aria-live="polite" aria-label="Supervisor conversation"></div>
+    <p class="muted">Short on time? <button type="button" id="history" class="secondary">Add 89 past days, already confirmed</button> then scan the QR for today (if you have not), confirm it, and send "registration".</p>
+    <p id="history-msg" class="muted" role="status"></p>
+
+    <h2 id="ledger-h">3. What the system stored</h2>
     <div id="chain" class="chain ok" role="status">Loading...</div>
     <div class="stats" id="tiles"></div>
     <div class="table-wrap">
       <table>
         <caption class="sr-only">Entries in the worker's record</caption>
-        <thead><tr><th scope="col">#</th><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Amount</th><th scope="col">Reference</th></tr></thead>
-        <tbody id="rows"><tr><td colspan="5">Nothing yet. Send a message on the left.</td></tr></tbody>
+        <thead><tr><th scope="col">#</th><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Amount</th><th scope="col">Confirmed by</th><th scope="col">Reference</th></tr></thead>
+        <tbody id="rows"><tr><td colspan="6">Nothing yet. Scan the site QR on the left.</td></tr></tbody>
       </table>
     </div>
-    <h3>3. Try to cheat</h3>
+    <h3>4. Try to cheat</h3>
     <p class="muted">Edit a past entry behind the system's back, like a dishonest operator would, and watch the record check catch it.</p>
     <button type="button" id="cheat">Change a past entry</button>
     <button type="button" id="restore" class="secondary" hidden>Put it back</button>
@@ -115,19 +132,21 @@ async function refresh() {
     ? '✔ Record intact: all ' + d.chain.entries_checked + ' entries are hash-linked and unchanged.'
     : '✖ Tampering detected at entry #' + d.chain.broken_at_seq + ': ' + d.chain.reason + '.';
   const tiles = $('tiles'); tiles.textContent = '';
-  [['days worked', d.summary.days], ['earned', 'Rs. ' + d.summary.earned], ['received', 'Rs. ' + d.summary.received],
-   ['still due', 'Rs. ' + d.summary.due]].forEach(([label, value]) => {
-    const t = document.createElement('div'); t.className = 'stat';
+  [['employer-confirmed days (need ' + d.summary.required + ')', d.summary.confirmed + ' / ' + d.summary.required, d.summary.ready ? 'good' : ''],
+   ['days on record', d.summary.days, ''], ['wages still due', 'Rs. ' + d.summary.due, '']].forEach(([label, value, cls]) => {
+    const t = document.createElement('div'); t.className = 'stat ' + cls;
     const s = document.createElement('span'); s.textContent = value;
     t.appendChild(s); t.appendChild(document.createTextNode(label)); tiles.appendChild(t);
   });
   const rows = $('rows'); rows.textContent = '';
-  if (!d.entries.length) { rows.innerHTML = '<tr><td colspan="5">Nothing yet. Send a message on the left.</td></tr>'; }
+  if (!d.entries.length) { rows.innerHTML = '<tr><td colspan="6">Nothing yet. Scan the site QR on the left.</td></tr>'; }
   d.entries.slice().reverse().forEach(e => {
     const tr = document.createElement('tr');
     cell(tr, e.seq); cell(tr, e.date);
-    cell(tr, e.kind === 'void' ? 'Cancelled #' + e.void_of : (e.kind === 'work' ? 'Work' + (e.paid ? ' (paid)' : '') : 'Payment'));
-    cell(tr, e.kind === 'void' ? '-' : 'Rs. ' + e.amount);
+    cell(tr, e.kind === 'void' ? 'Cancelled #' + e.void_of
+      : e.kind === 'payment' ? 'Payment' : (e.source === 'site_qr' ? 'Check-in (QR)' : 'Work' + (e.paid ? ' (paid)' : '')));
+    cell(tr, e.kind === 'void' || (e.kind === 'work' && !e.amount) ? '-' : 'Rs. ' + e.amount);
+    cell(tr, e.confirmed_by.length ? e.confirmed_by.join(', ') : '-');
     const td = document.createElement('td'); const c = document.createElement('code'); c.textContent = e.ref;
     td.appendChild(c); tr.appendChild(td); rows.appendChild(tr);
   });
@@ -182,7 +201,28 @@ $('mic').addEventListener('click', async () => {
 });
 
 $('send').addEventListener('submit', e => { e.preventDefault(); const t = $('text'); send(t.value.trim()); t.value = ''; });
-document.querySelectorAll('.hint').forEach(b => b.addEventListener('click', () => send(b.textContent)));
+document.querySelectorAll('.hint').forEach(b => b.addEventListener('click', () => send(b.dataset.text)));
+
+const sup = $('sup');
+function supBubble(text, who) {
+  const d = document.createElement('div'); d.className = 'msg ' + who; d.textContent = text;
+  sup.appendChild(d); sup.scrollTop = sup.scrollHeight;
+}
+document.querySelectorAll('[data-sup]').forEach(b => b.addEventListener('click', async () => {
+  supBubble(b.dataset.sup, 'me');
+  try {
+    const fd = new FormData(); fd.append('text', b.dataset.sup);
+    (await (await post('/demo/supervisor', fd)).json()).forEach(m => supBubble(m.text, 'bot'));
+  } catch (e) { supBubble(e.message, 'bot'); }
+  refresh();
+}));
+$('history').addEventListener('click', async () => {
+  try {
+    const r = await (await post('/demo/history')).json();
+    $('history-msg').textContent = 'Added ' + r.added + ' past working days, each checked in by QR and confirmed by the supervisor.';
+  } catch (e) { $('history-msg').textContent = e.message; }
+  refresh();
+});
 
 $('cheat').addEventListener('click', async () => {
   try {
@@ -197,9 +237,9 @@ $('restore').addEventListener('click', async () => {
   refresh();
 });
 $('reset').addEventListener('click', async () => {
-  await post('/demo/reset'); chat.textContent = ''; $('cheat-msg').textContent = ''; refresh();
+  await post('/demo/reset'); chat.textContent = ''; sup.textContent = ''; $('cheat-msg').textContent = ''; $('history-msg').textContent = ''; refresh();
 });
-bubble('Namaste! I am the worker\'s WhatsApp assistant. Tell me about today\'s work, for example: "Aaj Ramesh ke saath kaam kiya, 700, abhi nahi mile".', 'bot');
+bubble('Namaste! I keep a record of your working days. At the site, scan the QR poster to mark today\'s attendance. You can also speak or type, for example "Kitne din hue?" or "registration".', 'bot');
 refresh();
 </script>
 {% endblock %}

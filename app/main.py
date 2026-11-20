@@ -1,8 +1,10 @@
-"""FastAPI app: WhatsApp webhook, NGO website, chat simulator and document links."""
+"""FastAPI app: WhatsApp webhook, welfare board and NGO website, site QR posters, chat simulator, public demo."""
+import calendar
+import json
 import logging
 import os
 import secrets
-from datetime import date
+from datetime import date, timedelta
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
@@ -10,14 +12,14 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from . import attest, board, ledger, muster, qr
 from . import demo as demo_tools
-from . import ledger
 from .ai import AI
 from .chat import Bot, Inbound
 from .config import Settings, load_settings
 from .db import WAGE_CASE_STATUSES, Database
 from .recommend import CachedEmbedder, GeminiEmbedder
-from .records import live_entries, rupees, summarise
+from .records import LEVEL_TEXT, live_entries, rupees, summarise, verify_days
 from .voice import speakable, wav_to_ogg
 from .whatsapp import WhatsAppClient, parse_webhook, verify_signature
 
@@ -121,19 +123,162 @@ def create_app(settings: Settings | None = None, ai: AI | None = None, today_fn=
     # ------------------------------------------------------------------ website for NGOs, volunteers, families
     @app.get("/")
     def home():
-        return RedirectResponse("/dashboard")
+        return RedirectResponse("/board")
+
+    # ------------------------------------------------------------------ welfare board view
+    @app.get("/board")
+    def board_page(request: Request, user: str = Depends(staff), sent: int | None = None):
+        data = board.overview(db, today_fn())
+        return tpl.TemplateResponse(request, "board.html", {**data, "today": today_fn(), "sent": sent,
+                                                            "required": 90, "renewal_days": board.RENEWAL_DAYS})
+
+    @app.post("/board/reminders")
+    def board_reminders(user: str = Depends(staff)):
+        """WhatsApp every registered worker whose renewal is due within the warning window."""
+        sent = 0
+        for r in board.overview(db, today_fn())["renewals"]:
+            if r.w["phone"]:
+                when = r.renewal_on.strftime("%d %b %Y")
+                wa.send_text(r.w["phone"], f"Aapka welfare board registration {when} ko renew hona hai. Your welfare "
+                                           f"board registration is due for renewal on {when}. Send \"registration\" "
+                                           "for an updated work certificate.")
+                sent += 1
+        return RedirectResponse(f"/board?sent={sent}", status_code=303)
+
+    @app.post("/workers/{worker_id}/registered")
+    def worker_registered(worker_id: int, reg_no: str = Form(...), reg_date: str = Form(...),
+                          user: str = Depends(staff)):
+        db.get_worker(worker_id) or _404()
+        try:
+            d = date.fromisoformat(reg_date)
+        except ValueError:
+            raise HTTPException(400, "bad date")
+        if d > today_fn() or not reg_no.strip() or len(reg_no) > 64:
+            raise HTTPException(400, "registration number is required and the date cannot be in the future")
+        db.update_worker(worker_id, board_reg_no=reg_no.strip(), board_reg_date=d.isoformat())
+        return RedirectResponse(f"/workers/{worker_id}", status_code=303)
+
+    # ------------------------------------------------------------------ sites: QR posters, muster, supervisors
+    @app.get("/sites")
+    def sites_page(request: Request, user: str = Depends(staff)):
+        return tpl.TemplateResponse(request, "sites.html", {"sites": db.list_sites(today_fn().isoformat()),
+                                                            "imports": db.list_muster_imports()})
+
+    @app.post("/sites")
+    def sites_create(project: str = Form(...), principal_employer: str = Form(""), employer_type: str = Form("unknown"),
+                     contractor: str = Form(""), location: str = Form(""), supervisor_name: str = Form(""),
+                     supervisor_phone: str = Form(""), user: str = Depends(staff)):
+        if employer_type not in ("government", "developer", "small", "unknown") or not project.strip():
+            raise HTTPException(400, "project name is required")
+        sid = db.create_site(project=project.strip(), principal_employer=principal_employer.strip() or None,
+                             employer_type=employer_type, contractor=contractor.strip().title() or None,
+                             location=location.strip() or None, supervisor_name=supervisor_name.strip() or None,
+                             supervisor_phone=_phone(supervisor_phone))
+        return RedirectResponse(f"/sites/{sid}", status_code=303)
+
+    @app.get("/sites/{site_id}")
+    def site_page(site_id: int, request: Request, day: str = "", user: str = Depends(staff)):
+        site = db.get_site(site_id) or _404()
+        try:
+            d = date.fromisoformat(day) if day else today_fn()
+        except ValueError:
+            raise HTTPException(400, "bad date")
+        return tpl.TemplateResponse(request, "site.html", {
+            "site": site, "day": d, "today": today_fn(), "rows": db.site_day(site_id, d.isoformat()),
+            "prev": (d - timedelta(days=1)).isoformat(), "next": (d + timedelta(days=1)).isoformat(),
+            "imports": db.list_muster_imports(site_id), "ai": ai.enabled,
+            "check_in_text": qr.check_in_text(site["code"])})
+
+    @app.post("/sites/{site_id}/supervisor")
+    def site_supervisor(site_id: int, supervisor_name: str = Form(""), supervisor_phone: str = Form(""),
+                        user: str = Depends(staff)):
+        db.get_site(site_id) or _404()
+        db.set_supervisor(site_id, supervisor_name.strip(), _phone(supervisor_phone))
+        return RedirectResponse(f"/sites/{site_id}", status_code=303)
+
+    @app.post("/sites/{site_id}/confirm")
+    async def site_confirm(site_id: int, request: Request, user: str = Depends(staff)):
+        """An officer confirms check-ins on the website (for supervisors who do not use WhatsApp)."""
+        db.get_site(site_id) or _404()
+        form = await request.form()
+        day = str(form.get("day", ""))
+        ids = {int(x) for x in form.getlist("entry_id") if str(x).isdigit()}
+        rows = [r for r in db.site_day(site_id, day) if r["id"] in ids]
+        if rows:
+            attest.attest(db, rows, "officer", f"{user} (website)")
+        return RedirectResponse(f"/sites/{site_id}?day={day}", status_code=303)
+
+    @app.get("/sites/{site_id}/poster")
+    def site_poster(site_id: int, request: Request, user: str = Depends(staff)):
+        site = db.get_site(site_id) or _404()
+        link = qr.check_in_link(site["code"], s.wa_number)
+        return tpl.TemplateResponse(request, "poster.html", {
+            "site": site, "qr_svg": qr.svg(link), "link": link, "wa_number": s.wa_number,
+            "check_in_text": qr.check_in_text(site["code"])})
+
+    @app.post("/sites/{site_id}/muster")
+    async def site_muster_upload(site_id: int, file: UploadFile = File(...), user: str = Depends(staff)):
+        site = db.get_site(site_id) or _404()
+        data = await file.read(16 * 1024 * 1024 + 1)
+        mime = (file.content_type or "").split(";")[0]
+        if len(data) > 16 * 1024 * 1024 or not mime.startswith("image/"):
+            raise HTTPException(400, "send a photo (JPEG or PNG) under 16 MB")
+        import_id, _ = muster.read_photo(db, ai, site, data, mime, s.media_dir, uploaded_by=user, today=today_fn())
+        return RedirectResponse(f"/muster/{import_id}", status_code=303)
+
+    @app.get("/muster/{import_id}")
+    def muster_review(import_id: int, request: Request, user: str = Depends(staff)):
+        imp = db.get_muster_import(import_id) or _404()
+        return tpl.TemplateResponse(request, "muster.html", {
+            "imp": imp, "site": db.get_site(imp["site_id"]), "draft": json.loads(imp["extracted"]), "ai": ai.enabled})
+
+    @app.get("/muster/{import_id}/photo")
+    def muster_photo(import_id: int, user: str = Depends(staff)):
+        imp = db.get_muster_import(import_id) or _404()
+        if not os.path.exists(imp["photo_path"]):
+            _404()
+        return FileResponse(imp["photo_path"])
+
+    @app.post("/muster/{import_id}")
+    async def muster_import(import_id: int, request: Request, user: str = Depends(staff)):
+        """Save the reviewed rows. The reviewer can fix names and days, untick rows, and add rows Gemini missed."""
+        imp = db.get_muster_import(import_id) or _404()
+        if imp["status"] != "draft":
+            raise HTTPException(409, f"this register photo was already {imp['status']}")
+        form = await request.form()
+        try:
+            month, year = int(form.get("month", 0)), int(form.get("year", 0))
+            date(year, month, 1)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "bad month or year")
+        if date(year, month, 1) > today_fn():
+            raise HTTPException(400, "the register month cannot be in the future")
+        last_day = calendar.monthrange(year, month)[1]
+        rows = []
+        for i in range(int(form.get("count", 0) or 0) + 1):          # +1: the empty row for something Gemini missed
+            name = str(form.get(f"name_{i}", "")).strip()
+            if name and form.get(f"keep_{i}") and len(name) <= 80:
+                rows.append({"name": name, "days": muster.parse_days(str(form.get(f"days_{i}", "")), last_day)})
+        if not rows:
+            raise HTTPException(400, "tick at least one row to import, or reject the photo")
+        muster.import_rows(db, imp, rows, month, year, reviewer=user, today=today_fn())
+        return RedirectResponse(f"/sites/{imp['site_id']}", status_code=303)
+
+    @app.post("/muster/{import_id}/reject")
+    def muster_reject(import_id: int, user: str = Depends(staff)):
+        imp = db.get_muster_import(import_id) or _404()
+        if imp["status"] == "draft":
+            db.close_muster_import(import_id, "rejected", user)
+        return RedirectResponse(f"/sites/{imp['site_id']}", status_code=303)
 
     @app.get("/dashboard")
     def dashboard(request: Request, user: str = Depends(staff)):
-        rows = []
-        for w in db.list_workers():
-            sm = summarise(db.list_entries(w["id"]), today=today_fn())
-            rows.append({"w": w, "s": sm})
+        rows = board.worker_rows(db, today_fn())
         totals = {
             "workers": len(rows),
-            "due": sum(r["s"].due for r in rows),
-            "eligible": sum(1 for r in rows if r["s"].welfare_eligible),
-            "days": sum(r["s"].days_worked for r in rows),
+            "due": sum(r.s.due for r in rows),
+            "eligible": sum(1 for r in rows if r.v.ready_to_register),
+            "days": sum(r.s.days_worked for r in rows),
         }
         return tpl.TemplateResponse(request, "dashboard.html", {
             "rows": rows, "totals": totals, "cases": db.list_cases(), "ai": ai.enabled,
@@ -143,11 +288,14 @@ def create_app(settings: Settings | None = None, ai: AI | None = None, today_fn=
     def worker_page(worker_id: int, request: Request, user: str = Depends(staff)):
         w = db.get_worker(worker_id) or _404()
         entries = db.list_entries(worker_id)
+        corr, roles = db.corroboration_counts(worker_id), db.attestations_for(worker_id)
         return tpl.TemplateResponse(request, "worker.html", {
             "w": w, "site": db.get_site(w["site_id"]), "entries": entries,
             "s": summarise(entries, today=today_fn()),
+            "v": verify_days(entries, roles, corr, today=today_fn()), "roles": roles, "level_text": LEVEL_TEXT,
             "chain": ledger.verify_chain(db, worker_id, media_reader=_read_file),
-            "corr": db.corroboration_counts(worker_id),
+            "att": attest.verify_attestations(db, worker_id),
+            "corr": corr, "today": today_fn().isoformat(),
         })
 
     @app.post("/workers/{worker_id}/complaint")
@@ -306,8 +454,11 @@ def create_app(settings: Settings | None = None, ai: AI | None = None, today_fn=
             if not demo_tools.VISITOR_RE.match(vid):
                 vid = demo_tools.new_visitor_id()
             db.purge_stale_demo(24)
-            demo_tools.ensure_worker(db, demo_tools.demo_phone(vid))
-            resp = tpl.TemplateResponse(request, "demo.html", {"ai": ai.client is not None})
+            worker = demo_tools.ensure_worker(db, demo_tools.demo_phone(vid))
+            site = db.get_site(worker["site_id"])
+            resp = tpl.TemplateResponse(request, "demo.html", {
+                "ai": ai.client is not None, "check_in_text": qr.check_in_text(site["code"]),
+                "qr_svg": qr.svg(qr.check_in_link(site["code"], s.wa_number))})
             resp.set_cookie(demo_tools.COOKIE, vid, max_age=6 * 3600, httponly=True, samesite="lax",
                             secure=s.public_base_url.startswith("https"))
             return resp
@@ -335,17 +486,41 @@ def create_app(settings: Settings | None = None, ai: AI | None = None, today_fn=
             worker = demo_worker(request)
             entries = db.list_entries(worker["id"])
             sm = summarise(entries, today=today_fn())
+            roles = db.attestations_for(worker["id"])
+            v = verify_days(entries, roles, db.corroboration_counts(worker["id"]), today=today_fn())
             chain = ledger.verify_chain(db, worker["id"], media_reader=_read_file)
             return {
                 "chain": {"ok": chain.ok, "entries_checked": chain.entries_checked,
                           "broken_at_seq": chain.broken_at_seq, "reason": chain.reason},
                 "summary": {"days": sm.days_worked, "earned": sm.earned, "received": sm.paid, "due": sm.due,
-                            "cancelled": sm.cancelled_entries},
+                            "cancelled": sm.cancelled_entries, "confirmed": v.employer_days_12m,
+                            "required": 90, "ready": v.ready_to_register},
                 "entries": [{"seq": e["seq"], "kind": e["kind"], "date": e["work_date"], "amount": e["amount"],
                              "paid": bool(e["paid"]), "contractor": e["contractor"], "ref": e["hash"][:12],
-                             "said": e["transcript"], "void_of": e["void_of"]} for e in entries][-40:],
+                             "said": e["transcript"], "void_of": e["void_of"], "source": e["source"],
+                             "confirmed_by": sorted(roles.get(e["id"], ()))}
+                            for e in sorted(entries, key=lambda e: (e["work_date"], e["seq"]))][-40:],
                 "tampered": visitor_id(request) in tampered,
             }
+
+        @app.post("/demo/supervisor")
+        def demo_supervisor(request: Request, text: str = Form(...)):
+            """The sandbox site's supervisor, on their own WhatsApp: MUSTER lists today's check-ins, CONFIRM vouches."""
+            worker = demo_worker(request)
+            throttle(request, send_limit)
+            demo_tools.ensure_worker(db, worker["phone"])          # older sandboxes get a supervisor here
+            replies = bot.handle(Inbound(phone=demo_tools.supervisor_phone(worker["phone"]), text=text.strip()[:200],
+                                         source="demo"))
+            return JSONResponse([{"text": r.text} for r in replies])
+
+        @app.post("/demo/history")
+        def demo_history(request: Request):
+            """Fast-forward 89 supervisor-confirmed days so the 90-day rule can be reached in the demo."""
+            worker = demo_worker(request)
+            throttle(request, send_limit)
+            if any(e["work_date"] < today_fn().isoformat() for e in db.list_entries(worker["id"]) if e["kind"] == "work"):
+                raise HTTPException(409, "This sandbox already has past days. Press Start over to try again.")
+            return {"added": demo_tools.add_confirmed_history(db, worker, today_fn())}
 
         @app.post("/demo/tamper")
         def demo_tamper(request: Request):
@@ -418,8 +593,8 @@ def create_app(settings: Settings | None = None, ai: AI | None = None, today_fn=
         return JSONResponse([{"text": r.text, "document_url": r.document_url} for r in replies])
 
     # ------------------------------------------------------------------ helpers
-    def _doc_redirect(replies):
-        r = replies[0]
+    def _doc_redirect(outcome):
+        r = outcome.reply
         if r.document_url:
             return RedirectResponse(r.document_url.replace(s.public_base_url, ""), status_code=303)
         raise HTTPException(400, r.text)
@@ -429,6 +604,18 @@ def create_app(settings: Settings | None = None, ai: AI | None = None, today_fn=
 
 def _404():
     raise HTTPException(404)
+
+
+def _phone(raw: str) -> str | None:
+    """Supervisor phone as WhatsApp sends it: digits with country code. A 10-digit Indian number gets 91."""
+    digits = "".join(ch for ch in (raw or "") if ch.isdigit())
+    if not digits:
+        return None
+    if len(digits) == 10:
+        digits = "91" + digits
+    if not 11 <= len(digits) <= 15:
+        raise HTTPException(400, "phone number should have 10 digits, or a country code and number")
+    return digits
 
 
 def _read_file(path: str) -> bytes:

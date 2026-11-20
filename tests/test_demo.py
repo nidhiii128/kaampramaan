@@ -1,4 +1,3 @@
-"""Public demo sandbox: no login, per-visitor data, tamper demo, and strict isolation from real data."""
 from datetime import date
 
 from fastapi.testclient import TestClient

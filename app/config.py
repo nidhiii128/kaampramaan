@@ -26,6 +26,7 @@ class Settings:
     gemini_tts_voice: str = "Kore"
     voice_replies: bool = False      # answer WhatsApp voice notes with a voice note (needs ffmpeg)
     demo_mode: bool = False          # public no-login /demo sandbox
+    wa_number: str = ""              # the WhatsApp number workers message, e.g. 919800000000 (for site QR posters)
 
     def today(self) -> date:
         """Workers are in India; the server (WSL, Cloud Run) usually runs in UTC."""
@@ -73,4 +74,5 @@ def load_settings() -> Settings:
         gemini_tts_voice=env("GEMINI_TTS_VOICE", "Kore"),
         voice_replies=_flag(env("KP_VOICE_REPLIES", "")),
         demo_mode=_flag(env("KP_DEMO_MODE", "")),
+        wa_number=env("KP_WA_NUMBER", ""),
     )

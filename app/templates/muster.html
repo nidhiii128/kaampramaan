@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Register photo #{{ imp.id }} - KaamPramaan{% endblock %}
+{% block content %}
+<p><a href="/sites/{{ site.id }}">&larr; {{ site.project or "Site" }}</a></p>
+<h1>Muster register photo #{{ imp.id }}</h1>
+<p class="muted">Sent by {{ imp.uploaded_by }} on {{ imp.created_at[:10] }}. Photo SHA-256 <code>{{ imp.photo_sha256[:16] }}</code>.
+{% if imp.status != "draft" %}<b>Already {{ imp.status }}{% if imp.reviewed_by %} by {{ imp.reviewed_by }}{% endif %}.</b>{% endif %}</p>
+
+<div class="review">
+  <figure class="card">
+    <img src="/muster/{{ imp.id }}/photo" alt="Photo of the paper muster register for {{ site.project or 'this site' }}">
+    <figcaption class="muted">Compare each row with the photo before importing.</figcaption>
+  </figure>
+
+  <div>
+    {% if not draft.is_muster_roll and not draft.rows %}
+      <p class="note" role="note">{% if ai %}Gemini did not find an attendance register in this photo.{% else %}Reading register photos needs GEMINI_API_KEY.{% endif %} {{ draft.notes or "" }} You can still type the rows below.</p>
+    {% elif draft.notes %}
+      <p class="note" role="note">Gemini's notes: {{ draft.notes }}</p>
+    {% endif %}
+
+    {% if imp.status == "draft" %}
+    <form method="post" action="/muster/{{ imp.id }}" class="grid">
+      <div class="inline">
+        <label>Month <input type="number" name="month" min="1" max="12" value="{{ draft.month }}" required></label>
+        <label>Year <input type="number" name="year" min="2000" max="2100" value="{{ draft.year }}" required></label>
+      </div>
+      <input type="hidden" name="count" value="{{ draft.rows|length }}">
+      <div class="table-wrap"><table>
+        <caption class="sr-only">Rows read from the register</caption>
+        <thead><tr><th scope="col">Import</th><th scope="col">Name</th><th scope="col">Days present (e.g. 1, 2, 5-9)</th></tr></thead>
+        <tbody>
+        {% for r in draft.rows %}
+          <tr>
+            <td><label class="check"><input type="checkbox" name="keep_{{ loop.index0 }}" value="1" checked><span class="sr-only">Import row {{ loop.index }}</span></label></td>
+            <td><label class="sr-only" for="n{{ loop.index0 }}">Name, row {{ loop.index }}</label><input id="n{{ loop.index0 }}" name="name_{{ loop.index0 }}" value="{{ r.name }}" maxlength="80"></td>
+            <td><label class="sr-only" for="d{{ loop.index0 }}">Days, row {{ loop.index }}</label><input id="d{{ loop.index0 }}" name="days_{{ loop.index0 }}" value="{{ r.days|join(', ') }}" class="wide"> <small class="muted">{{ r.days|length }} days</small></td>
+          </tr>
+        {% endfor %}
+          <tr>
+            <td><label class="check"><input type="checkbox" name="keep_{{ draft.rows|length }}" value="1"><span class="sr-only">Import the extra row</span></label></td>
+            <td><label class="sr-only" for="nx">Name of a worker Gemini missed</label><input id="nx" name="name_{{ draft.rows|length }}" placeholder="Missed a row? Name" maxlength="80"></td>
+            <td><label class="sr-only" for="dx">Days for that worker</label><input id="dx" name="days_{{ draft.rows|length }}" placeholder="1, 2, 5-9" class="wide"></td>
+          </tr>
+        </tbody>
+      </table></div>
+      <p class="muted">Importing adds each day to the worker's record (or vouches for a day they already checked in), marked "muster register" with this photo's fingerprint. Workers not yet known at this site are added without a phone.</p>
+      <button>Import ticked rows</button>
+    </form>
+    <form method="post" action="/muster/{{ imp.id }}/reject"><button class="secondary">Reject this photo</button></form>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

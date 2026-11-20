@@ -53,6 +53,32 @@ class BoardInfo(BaseModel):
     location: Optional[str] = None
 
 
+class MusterRow(BaseModel):
+    name: str = Field(description="Worker's name as written in the register, in Latin script")
+    present_days: list[int] = Field(default_factory=list,
+                                    description="Day-of-month numbers (1-31) marked present for this worker")
+
+
+class MusterSheet(BaseModel):
+    is_muster_roll: bool = False
+    month: Optional[int] = Field(None, description="Month 1-12 from the register header, if written")
+    year: Optional[int] = Field(None, description="Four-digit year from the register header, if written")
+    rows: list[MusterRow] = Field(default_factory=list)
+    notes: Optional[str] = Field(None, description="Cells or names that could not be read")
+
+
+MUSTER_PROMPT = """This is a photo of a paper attendance register (muster roll, haziri register) from a construction
+site in India. Usually there is one row per worker and one column per day of the month. Present is marked with P,
+a tick, 1, a signature or a thumb mark; absent with A, a dash, a cross or an empty cell. The register may be in
+Hindi, English or another Indian language.
+
+For each worker row return the name (romanised to Latin script) and the day numbers marked present.
+Known workers at this site (if a written name is clearly one of these, spell it exactly like this): {known}.
+Read the month and year from the header if they are written; otherwise leave them empty.
+Never invent a row or a day. If a cell or a name cannot be read, leave it out and say so in notes.
+If this is not an attendance register, set is_muster_roll to false and return no rows."""
+
+
 UNDERSTAND_PROMPT = """You help daily-wage construction workers in India keep a record of their work.
 Today is {today}. The worker may speak Hindi, Bhojpuri, Bengali, Odia, Marathi, English or a mix.
 Classify the message and extract facts. Do not guess numbers that were not said.
@@ -145,7 +171,8 @@ TOOLS = [
     },
     {
         "name": "make_work_record",
-        "description": "Create the work record PDF used for welfare board registration (90 days rule).",
+        "description": "Create the pre-filled welfare board registration application with the 90-day work "
+                       "certificate (PDF). Use when they ask about registration, labour card or the welfare board.",
         "parameters": {"type": "object", "properties": {}},
     },
     {
@@ -385,6 +412,25 @@ class AI:
         except Exception:
             log.exception("Gemini board reading failed")
             return BoardInfo(is_site_board=False)
+
+    # ---------- muster register photos ----------
+    def read_muster(self, image: bytes, mime: str = "image/jpeg", known_names: list[str] | None = None) -> MusterSheet:
+        """Gemini vision reads a handwritten attendance register into rows. The result is only a draft:
+        app/muster.py range-checks it and a person reviews it before anything is saved."""
+        if not self.client:
+            return MusterSheet(is_muster_roll=False, notes="Reading register photos needs GEMINI_API_KEY")
+        from google.genai import types
+        known = ", ".join(sorted(set(known_names or []))[:200]) or "none yet"
+        try:
+            resp = self._generate(
+                [MUSTER_PROMPT.format(known=known), types.Part.from_bytes(data=image, mime_type=mime)],
+                types.GenerateContentConfig(
+                    response_mime_type="application/json", response_schema=MusterSheet, temperature=0),
+            )
+            return resp.parsed if isinstance(resp.parsed, MusterSheet) else MusterSheet(**json.loads(resp.text))
+        except Exception:
+            log.exception("Gemini muster reading failed")
+            return MusterSheet(is_muster_roll=False, notes="Could not read the photo, please try a clearer one")
 
     # ---------- complaint wording ----------
     def complaint_paragraph(self, facts: dict) -> str:

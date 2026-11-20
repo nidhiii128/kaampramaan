@@ -8,7 +8,9 @@ import re
 import secrets
 import time
 from collections import defaultdict, deque
+from datetime import date, timedelta
 
+from . import attest, ledger
 from .db import DEMO_PREFIX, Database
 
 COOKIE = "kp_demo"
@@ -26,15 +28,41 @@ def demo_phone(visitor_id: str) -> str:
     return f"{DEMO_PREFIX}{visitor_id}"
 
 
+def supervisor_phone(worker_phone: str) -> str:
+    """The sandbox site's supervisor. Starts with 'demo-' too, and is never a worker."""
+    return f"{worker_phone}-sup"
+
+
 def ensure_worker(db: Database, phone: str):
     """The visitor's worker, already registered at a sandbox site so the demo starts at the daily-use step."""
     worker = db.get_worker_by_phone(phone)
     if worker:
+        site = db.get_site(worker["site_id"])
+        if site and not site["supervisor_phone"]:       # sandboxes made before supervisors existed
+            db.set_supervisor(site["id"], "Demo Supervisor", supervisor_phone(phone))
         return worker
     site = db.create_site(project="Demo site (sandbox)", principal_employer="Demo Developers Pvt Ltd",
-                          employer_type="developer", contractor="Ramesh", location="Delhi NCR")
+                          employer_type="developer", contractor="Ramesh", location="Delhi NCR",
+                          supervisor_name="Demo Supervisor", supervisor_phone=supervisor_phone(phone))
     db.create_worker(phone, name="Demo Worker", village="Demo Village", state="active", site_id=site)
     return db.get_worker_by_phone(phone)
+
+
+def add_confirmed_history(db: Database, worker, today: date, days: int = 89) -> int:
+    """Fast-forward: `days` past working days (Sundays off) checked in at the sandbox site and confirmed by its
+    supervisor, so a visitor can reach the 90-day rule with one more check-in today."""
+    site = db.get_site(worker["site_id"])
+    have = {e["work_date"] for e in db.list_entries(worker["id"]) if e["kind"] == "work"}
+    d, made = today - timedelta(days=1), []
+    while len(made) < days and d > today - timedelta(days=330):
+        if d.weekday() != 6 and d.isoformat() not in have:
+            made.append(ledger.append(db, ledger.NewEntry(
+                worker_id=worker["id"], kind="work", work_date=d.isoformat(), amount=0, source="site_qr",
+                site_id=site["id"], contractor=site["contractor"],
+                transcript=f"Checked in at {site['project']} (site code {site['code']}, sandbox history)")))
+        d -= timedelta(days=1)
+    attest.attest(db, made, "supervisor", f"{site['supervisor_name'] or 'Demo Supervisor'} (sandbox)")
+    return len(made)
 
 
 class RateLimiter:

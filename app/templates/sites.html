@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Sites - KaamPramaan{% endblock %}
+{% block content %}
+<h1>Sites</h1>
+<p class="muted">Each site gets a QR poster for the gate. Workers scan it to check in on WhatsApp; the supervisor confirms the day's list on WhatsApp or sends a photo of the paper muster register.</p>
+
+<div class="row">
+  <div class="table-wrap"><table>
+    <caption class="sr-only">Registered sites</caption>
+    <thead><tr><th scope="col">Site</th><th scope="col">Code</th><th scope="col">Supervisor</th><th scope="col">Workers</th><th scope="col">Checked in today</th></tr></thead>
+    <tbody>
+    {% for st in sites %}
+      <tr>
+        <td><a href="/sites/{{ st.id }}">{{ st.project or "Site " ~ st.id }}</a><br><small class="muted">{{ st.principal_employer or "" }}{% if st.location %} &middot; {{ st.location }}{% endif %}</small></td>
+        <td><code>{{ st.code }}</code></td>
+        <td>{% if st.supervisor_phone %}{{ st.supervisor_name or "" }} <small class="muted">{{ st.supervisor_phone }}</small>{% else %}<span class="muted">not set</span>{% endif %}</td>
+        <td>{{ st.workers }}</td>
+        <td>{{ st.today_count }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5">No sites yet. Add one on the right.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+
+  <form method="post" action="/sites" class="card grid">
+    <h2>Add a site</h2>
+    <label>Project name <input name="project" required placeholder="Green Heights Tower B"></label>
+    <label>Principal employer <input name="principal_employer" placeholder="Department or developer that owns the project"></label>
+    <label>Site type
+      <select name="employer_type">
+        <option value="government">Government project</option>
+        <option value="developer">Private developer</option>
+        <option value="small">Small private site</option>
+        <option value="unknown" selected>Not known</option>
+      </select>
+    </label>
+    <label>Contractor <input name="contractor"></label>
+    <label>Place <input name="location" placeholder="Sector 75, Noida"></label>
+    <label>Supervisor name <input name="supervisor_name"></label>
+    <label>Supervisor WhatsApp number <input name="supervisor_phone" inputmode="tel" placeholder="98xxxxxxxx"></label>
+    <button>Add site and make QR poster</button>
+  </form>
+</div>
+
+{% if imports %}
+<h2>Muster register photos</h2>
+<div class="table-wrap"><table>
+  <caption class="sr-only">Muster register photos</caption>
+  <thead><tr><th scope="col">#</th><th scope="col">Site</th><th scope="col">Sent by</th><th scope="col">Status</th></tr></thead>
+  <tbody>
+  {% for m in imports %}
+    <tr><td><a href="/muster/{{ m.id }}">#{{ m.id }}</a></td><td>{{ m.project or "-" }}</td><td>{{ m.uploaded_by }} <small class="muted">{{ m.created_at[:10] }}</small></td>
+      <td>{% if m.status == "draft" %}<b>needs review</b>{% else %}{{ m.status }}{% endif %}</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endif %}
+{% endblock %}

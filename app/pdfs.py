@@ -1,10 +1,11 @@
 """PDF documents a worker, NGO or family can take to a labour office or welfare board."""
-from datetime import date
+from datetime import date, timedelta
 
 from fpdf import FPDF
 
+from .attest import AttestationCheck
 from .ledger import ChainCheck
-from .records import WELFARE_RULE_NOTE, Summary, live_entries, rupees
+from .records import LEVEL_TEXT, WELFARE_RULE_NOTE, Summary, Verification, live_entries, rupees
 
 EMPLOYER_TYPE_TEXT = {
     "government": "Government project. The department is the principal employer.",
@@ -129,25 +130,81 @@ def complaint_pdf(path, worker, site, summary: Summary, chain: ChainCheck,
     doc.output(path)
 
 
-def registration_pdf(path, worker, site, entries, summary: Summary, chain: ChainCheck, today: date | None = None):
+ROLE_TEXT = {"supervisor": "Supervisor", "muster_register": "Muster register", "officer": "Officer"}
+SOURCE_TEXT = {"site_qr": "Site QR", "muster_photo": "Register photo", "whatsapp": "WhatsApp", "volunteer": "Volunteer",
+               "simulator": "Simulator", "demo": "Demo", "ivr": "Phone call"}
+
+
+def application_pdf(path, worker, site, sites: dict, entries, summary: Summary, verification: Verification,
+                    chain: ChainCheck, attestations: AttestationCheck, today: date | None = None):
+    """Pre-filled application for registration as a building worker, with the 90-day work certificate.
+
+    Things KaamPramaan does not hold (date of birth, Aadhaar, bank account, nominee) are left as blanks for the
+    facilitation centre or board officer to fill and check against originals."""
     today = today or date.today()
-    doc = _Doc("Work record")
-    doc.h1("Record of construction work for welfare board registration")
-    doc.para(f"Date: {today.strftime('%d %B %Y')}")
-    _worker_block(doc, worker, site)
-    doc.h2("Days worked")
+    v = verification
+    doc = _Doc("Application")
+    doc.h1("Application for registration as a building worker (pre-filled)\nwith 90-day work certificate")
+    doc.para(f"Prepared: {today.strftime('%d %B %Y')}. For submission to the State Building and Other Construction "
+             "Workers' Welfare Board or its facilitation centre.", size=9)
+
+    doc.h2("A. Worker")
     doc.kv([
-        ("In the last 12 months", f"{summary.days_last_12_months} days"),
-        ("Required for registration", WELFARE_RULE_NOTE),
-        ("Status", "Meets the 90-day requirement" if summary.welfare_eligible
-         else f"{summary.days_to_eligibility} more days needed"),
+        ("Name", worker["name"] or "Not given"),
+        ("Village / native place", worker["village"] or "Not given"),
+        ("Mobile", worker["phone"] or "None (logged through supervisor or volunteer)"),
+        ("Date of birth", "______________________"),
+        ("e-Shram UAN / Aadhaar", "To be checked by the officer against the original (not stored by KaamPramaan)"),
+        ("Bank account", "______________________"),
+        ("Nominee", "______________________"),
     ])
-    doc.h2("Working days")
+
+    doc.h2("B. Establishment (current site)")
+    doc.kv([
+        ("Project", (site["project"] if site else None) or "Not recorded"),
+        ("Principal employer", (site["principal_employer"] if site else None) or "Not identified"),
+        ("Site type", EMPLOYER_TYPE_TEXT[(site["employer_type"] if site else "unknown") or "unknown"]),
+        ("Contractor", (site["contractor"] if site else None) or "Not recorded"),
+        ("Site supervisor", (f"{site['supervisor_name'] or 'Name not given'}, {site['supervisor_phone']}"
+                             if site and site["supervisor_phone"] else "Not registered")),
+        ("KaamPramaan site code", (site["code"] if site else None) or "-"),
+    ])
+
+    doc.h2("C. 90-day work certificate (last 12 months)")
+    doc.kv([
+        ("Confirmed by employer side", f"{v.employer_days_12m} days (supervisor confirmation or muster register)"),
+        ("Backed by co-workers only", f"{v.coworker_days_12m} days"),
+        ("Worker's own report only", f"{v.self_days_12m} days"),
+        ("Rule", WELFARE_RULE_NOTE),
+        ("Status", "Meets the 90-day requirement on employer-confirmed days" if v.ready_to_register
+         else f"{v.verified_days_to_go} more employer-confirmed days needed"),
+    ])
+
+    doc.h2("D. Working days")
+    year_ago = (today - timedelta(days=365)).isoformat()
     seen, rows = set(), []
-    for e in live_entries(entries):
-        if e["kind"] == "work" and e["work_date"] not in seen:
-            seen.add(e["work_date"])
-            rows.append((e["work_date"], e["contractor"] or "-", e["source"], e["hash"][:12]))
-    doc.table(["Date", "Contractor", "Recorded via", "Reference"], rows, [35, 55, 35, 49])
+    for e in sorted(live_entries(entries), key=lambda e: (e["work_date"], e["seq"])):
+        d = e["work_date"]
+        if e["kind"] != "work" or d in seen or not (year_ago < d <= today.isoformat()):
+            continue
+        seen.add(d)
+        s = sites.get(e["site_id"])
+        level = v.by_date.get(d, "self")
+        who = ", ".join(ROLE_TEXT[r] for r in sorted(v.verifiers.get(d, ()))) or LEVEL_TEXT[level]
+        rows.append((d, ((s["project"] if s else None) or "-")[:24], SOURCE_TEXT.get(e["source"], e["source"]),
+                     who[:30], e["hash"][:12]))
+    doc.table(["Date", "Site", "Recorded via", "Vouched for by", "Reference"], rows, [24, 46, 28, 48, 28])
+
+    doc.h2("E. How this record was kept")
     _integrity(doc, chain, summary.cancelled_entries)
+    doc.para(("Employer-side confirmations: " + (f"all {attestations.checked} are intact and linked to the entries "
+              "they confirm." if attestations.ok else f"WARNING: {attestations.reason}.")) if attestations.checked
+             else "No employer-side confirmations yet.")
+
+    doc.h2("F. For office use")
+    doc.para("Documents checked against originals:  [ ] Identity   [ ] Age   [ ] Bank   [ ] Photo\n"
+             "Work days accepted: ________     Registration no.: ______________________\n\n"
+             "Officer name, signature and date: ______________________________________")
+    doc.ln(4)
+    doc.para("Signature / thumb impression of worker: ____________________")
     doc.output(path)

@@ -9,11 +9,11 @@
   <div class="stat"><span>{{ totals.workers }}</span>workers</div>
   <div class="stat"><span>{{ totals.days }}</span>working days recorded</div>
   <div class="stat"><span>Rs. {{ totals.due|rupees }}</span>wages due</div>
-  <div class="stat"><span>{{ totals.eligible }}</span>eligible for welfare board</div>
+  <div class="stat"><span>{{ totals.eligible }}</span>ready for welfare board (employer-confirmed)</div>
 </section>
 
 <table>
-  <thead><tr><th>Name</th><th>Village</th><th>Site</th><th>Owner</th><th>Days (12 mo)</th><th>Due</th><th>Welfare board</th></tr></thead>
+  <thead><tr><th>Name</th><th>Village</th><th>Site</th><th>Owner</th><th>Days (12 mo)</th><th>Employer-confirmed</th><th>Due</th><th>Welfare board</th></tr></thead>
   <tbody>
   {% for r in rows %}
     <tr>
@@ -23,11 +23,12 @@
       <td>{{ r.w.project or "-" }}</td>
       <td>{{ r.w.principal_employer or "-" }}{% if r.w.employer_type and r.w.employer_type != 'unknown' %} <small class="tag {{ r.w.employer_type }}">{{ r.w.employer_type }}</small>{% endif %}</td>
       <td>{{ r.s.days_last_12_months }}</td>
+      <td>{{ r.v.employer_days_12m }}</td>
       <td>{% if r.s.due %}<b>Rs. {{ r.s.due|rupees }}</b>{% else %}-{% endif %}</td>
-      <td>{% if r.s.welfare_eligible %}<span class="ok">Eligible</span>{% else %}{{ r.s.days_to_eligibility }} days to go{% endif %}</td>
+      <td>{% if r.w.board_reg_no %}<span class="ok">Registered</span>{% elif r.v.ready_to_register %}<span class="ok">Ready</span>{% else %}{{ r.v.verified_days_to_go }} confirmed days to go{% endif %}</td>
     </tr>
   {% else %}
-    <tr><td colspan="7">No workers yet. Send a message from the chat simulator or log a group.</td></tr>
+    <tr><td colspan="8">No workers yet. Send a message from the chat simulator or log a group.</td></tr>
   {% endfor %}
   </tbody>
 </table>
