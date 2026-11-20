@@ -55,9 +55,9 @@
     <tr>
       <td>{{ e.seq }}</td>
       <td>{{ e.work_date }}</td>
-      <td>{{ "Work" if e.kind == "work" else "Payment" }}</td>
+      <td>{{ {"work": "Work", "payment": "Payment", "void": "Cancelled #" ~ e.void_of}[e.kind] }}</td>
       <td>{{ e.contractor or "-" }}</td>
-      <td>Rs. {{ e.amount|rupees }}</td>
+      <td>{% if e.kind == "void" %}-{% else %}Rs. {{ e.amount|rupees }}{% endif %}</td>
       <td>{% if e.kind == "work" %}{{ "Yes" if e.paid else "No" }}{% else %}-{% endif %}</td>
       <td>{% if e.kind == "work" %}{{ corr.get(e.id, 0) }}{% else %}-{% endif %}</td>
       <td>{{ e.source }}</td>

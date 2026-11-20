@@ -49,7 +49,7 @@ def test_contractor_who_owes_wages_ranks_below_one_who_pays(tmp_path):
     opening(db, "Plaster work Sector 62", contractor="Mohan")
     recs = top(db, worker(db, phone="d", lat=NOIDA[0], lon=NOIDA[1]), "plaster")
     assert [r.opening["contractor"] for r in recs] == ["Mohan", "Suresh Builders"]
-    assert "owes wages to 2 workers" in recs[1].warning
+    assert "2 workers have reported unpaid wages" in recs[1].warning
     assert any("paid all 6 days" in why for why in recs[0].reasons)
 
 
@@ -200,3 +200,8 @@ def test_website_posts_and_closes_openings(client):
                                           "latitude": "28.6"}).status_code == 400
     assert client.post("/openings/1/close", follow_redirects=False).status_code == 303
     assert "closed" in client.get("/openings").text
+
+
+def test_same_contractor_does_not_merge_different_men_with_one_first_name():
+    assert not same_contractor("Ramesh Yadav", "Ramesh Sharma")
+    assert same_contractor("Ramesh Yadav", "Ramesh") and same_contractor("ramesh", "Ramesh Yadav Constructions")

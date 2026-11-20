@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS entries (
     id INTEGER PRIMARY KEY,
     worker_id INTEGER NOT NULL REFERENCES workers(id),
     seq INTEGER NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('work', 'payment')),
+    kind TEXT NOT NULL CHECK (kind IN ('work', 'payment', 'void')),
     work_date TEXT NOT NULL,
     site_id INTEGER REFERENCES sites(id),
     contractor TEXT,
@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS entries (
     recorded_at TEXT NOT NULL,
     prev_hash TEXT NOT NULL,
     hash TEXT NOT NULL,
+    void_of INTEGER,                   -- for kind 'void': seq of the entry this cancels
     UNIQUE (worker_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_entries_site_date ON entries (site_id, work_date);
@@ -129,7 +130,21 @@ class Database:
         if path != ":memory:":
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with self.connect() as conn:
+            old = self._old_entries_table(conn)
+            if old:
+                conn.execute("DROP INDEX IF EXISTS idx_entries_site_date")
+                conn.execute("ALTER TABLE entries RENAME TO entries_old")
             conn.executescript(SCHEMA)
+            if old:  # databases created before 'void' entries existed: copy rows over, hashes stay valid
+                cols = ("id, worker_id, seq, kind, work_date, site_id, contractor, amount, paid, source, transcript, "
+                        "media_path, media_sha256, latitude, longitude, recorded_at, prev_hash, hash")
+                conn.execute(f"INSERT INTO entries ({cols}) SELECT {cols} FROM entries_old")
+                conn.execute("DROP TABLE entries_old")
+
+    @staticmethod
+    def _old_entries_table(conn) -> bool:
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entries'").fetchone()
+        return bool(row) and "void_of" not in row["sql"]
 
     @contextmanager
     def connect(self):
@@ -213,7 +228,8 @@ class Database:
             ).fetchall()
 
     def corroboration_counts(self, worker_id: int) -> dict[int, int]:
-        """For each work entry, how many *other* workers logged the same site and date."""
+        """For each work entry, how many *other* workers logged the same site and date.
+        Entries that were cancelled with a 'void' entry do not count."""
         with self.connect() as c:
             rows = c.execute(
                 """SELECT e.id, COUNT(DISTINCT o.worker_id) AS n
@@ -221,6 +237,8 @@ class Database:
                    LEFT JOIN entries o
                      ON o.kind = 'work' AND o.work_date = e.work_date
                     AND o.site_id = e.site_id AND o.worker_id != e.worker_id
+                    AND NOT EXISTS (SELECT 1 FROM entries v WHERE v.worker_id = o.worker_id
+                                    AND v.kind = 'void' AND v.void_of = o.seq)
                    WHERE e.worker_id = ? AND e.kind = 'work' AND e.site_id IS NOT NULL
                    GROUP BY e.id""",
                 (worker_id,),

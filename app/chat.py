@@ -11,7 +11,7 @@ from . import ledger, pdfs
 from .ai import AI, BoardInfo, Understanding, _clean
 from .db import Database
 from .recommend import CachedEmbedder, recommend
-from .records import rupees, summarise
+from .records import live_entries, rupees, summarise
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class ToolOutcome:
     """What a tool tells Gemini (data) and the fixed reply sent when Gemini's reply is not used."""
     data: dict
     reply: Reply
+    footer: str = ""       # proof reference and undo hint, added to every reply that saved an entry
 
 
 @dataclass
@@ -179,9 +180,11 @@ class Bot:
 
         docs = [o.reply for o in outcomes if o.reply.document_url]
         if result.text:
+            footer = "\n".join(o.footer for o in outcomes if o.footer)
+            text = result.text + ("\n" + footer if footer else "")
             if docs:  # attach the PDF to Gemini's reply
-                return [Reply(result.text, docs[-1].document_url, docs[-1].document_name)]
-            return [Reply(result.text)]
+                return [Reply(text, docs[-1].document_url, docs[-1].document_name)]
+            return [Reply(text)]
         if outcomes:
             return [o.reply for o in outcomes]
         return [Reply(HOW_TO_LOG)]
@@ -202,6 +205,8 @@ class Bot:
             return self._report_death(msg, u)
         if name == "find_work":
             return self._find_work(worker, u)
+        if name == "void_last_entry":
+            return self._void_last(worker, msg, u)
         raise ValueError(f"unknown tool {name}")
 
     # ------------------------------------------------------------------ tools
@@ -226,26 +231,51 @@ class Bot:
         self.db.update_worker(worker["id"], last_wage=wage)
         s = self._summary(worker["id"])
         d = date.fromisoformat(work_date)
+        footer = _proof_footer(entry)
         return ToolOutcome(
             {"saved": True, "work_date": work_date, "wage": wage, "paid": bool(u.paid),
              "contractor": entry["contractor"], "days_this_month": s.days_this_month, "due": s.due},
             Reply(f"Saved: {d.strftime('%d %b')}, Rs. {rupees(wage)} ({'paid' if u.paid else 'not paid yet'}).\n"
-                  f"Is mahine / This month: {days(s.days_this_month)}. Baaki / Due: Rs. {rupees(s.due)}."))
+                  f"Is mahine / This month: {days(s.days_this_month)}. Baaki / Due: Rs. {rupees(s.due)}.\n{footer}"),
+            footer=footer)
 
     def _record_payment(self, worker, msg, media, u: Understanding) -> ToolOutcome:
         if not u.amount:
             return ToolOutcome(
                 {"saved": False, "error": "amount missing, ask how much was received"},
                 Reply("Kitne paise mile? How much were you paid? e.g. \"Ramesh paid me 5000\"."))
-        ledger.append(self.db, ledger.NewEntry(
+        entry = ledger.append(self.db, ledger.NewEntry(
             worker_id=worker["id"], kind="payment", work_date=self.today_fn().isoformat(), amount=u.amount,
             source=msg.source, site_id=worker["site_id"], contractor=u.contractor,
             transcript=u.transcript or msg.text, media_path=media[0], media_sha256=media[1],
         ))
         s = self._summary(worker["id"])
+        footer = _proof_footer(entry)
         return ToolOutcome(
             {"saved": True, "amount": u.amount, "still_due": s.due},
-            Reply(f"Payment noted: Rs. {rupees(u.amount)}. Baaki / Still due: Rs. {rupees(s.due)}."))
+            Reply(f"Payment noted: Rs. {rupees(u.amount)}. Baaki / Still due: Rs. {rupees(s.due)}.\n{footer}"),
+            footer=footer)
+
+    def _void_last(self, worker, msg, u: Understanding) -> ToolOutcome:
+        res = ledger.void_last(self.db, worker["id"], source=msg.source, transcript=u.transcript or msg.text)
+        if res is None:
+            return ToolOutcome(
+                {"cancelled": False, "reason": "nothing from the last 24 hours to cancel"},
+                Reply("Cancel nahi ho saka. Sirf pichle 24 ghante ki entry cancel hoti hai. "
+                      "Nothing from the last 24 hours to cancel. An NGO volunteer can help with older entries."))
+        target, void = res
+        # the default wage for the next day should come from an entry that still counts
+        works = [e for e in live_entries(self.db.list_entries(worker["id"])) if e["kind"] == "work"]
+        self.db.update_worker(worker["id"], last_wage=works[-1]["amount"] if works else None)
+        s = self._summary(worker["id"])
+        what = (f"{date.fromisoformat(target['work_date']).strftime('%d %b')} work, Rs. {rupees(target['amount'])}"
+                if target["kind"] == "work" else f"payment of Rs. {rupees(target['amount'])}")
+        return ToolOutcome(
+            {"cancelled": True, "entry": what, "amount": target["amount"], "due": s.due,
+             "days_this_month": s.days_this_month},
+            Reply(f"Cancelled: {what}. Ref: {void['hash'][:12]}.\n"
+                  f"Ab sahi entry bhejiye. Send the correct entry now. Baaki / Due: Rs. {rupees(s.due)}."),
+            footer=f"Ref: {void['hash'][:12]}")
 
     def _balance(self, worker) -> ToolOutcome:
         s = self._summary(worker["id"])
@@ -362,6 +392,12 @@ class Bot:
         return path, ledger.sha256_bytes(data)
 
 
+def _proof_footer(entry: dict) -> str:
+    """The reference matches the one printed in the PDFs, and the WhatsApp message itself carries a
+    timestamp from Meta, so the worker holds proof that does not depend on our database."""
+    return (f"Ref: {entry['hash'][:12]}. Galat hai? \"galat\" bhejiye. If wrong, send \"wrong\".")
+
+
 def days(n: int) -> str:
     return f"{n} day" if n == 1 else f"{n} days"
 
@@ -376,7 +412,7 @@ def _int_or_none(v):
 INTENT_TO_TOOL = {
     "log_work": "log_work", "record_payment": "record_payment", "ask_balance": "get_balance",
     "request_complaint": "make_complaint", "request_registration": "make_work_record",
-    "report_death": "report_death", "find_work": "find_work",
+    "report_death": "report_death", "find_work": "find_work", "cancel_last": "void_last_entry",
 }
 TOOL_TO_INTENT = {tool: intent for intent, tool in INTENT_TO_TOOL.items()}
 
@@ -389,5 +425,6 @@ HOW_TO_LOG = (
     "- \"How many days?\"\n"
     "- \"Ramesh has not paid me\" (get a complaint)\n"
     "- \"Registration\" (welfare board work record)\n"
-    "- \"Kaam chahiye\" (find new work)"
+    "- \"Kaam chahiye\" (find new work)\n"
+    "- \"Galat\" / \"wrong\" (cancel your last entry)"
 )
