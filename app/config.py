@@ -22,6 +22,10 @@ class Settings:
     admin_password: str
     timezone: str = "Asia/Kolkata"
     gemini_embed_model: str = "gemini-embedding-001"
+    gemini_tts_models: tuple = ("gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview")
+    gemini_tts_voice: str = "Kore"
+    voice_replies: bool = False      # answer WhatsApp voice notes with a voice note (needs ffmpeg)
+    demo_mode: bool = False          # public no-login /demo sandbox
 
     def today(self) -> date:
         """Workers are in India; the server (WSL, Cloud Run) usually runs in UTC."""
@@ -39,6 +43,10 @@ def load_dotenv(path: str = ".env") -> None:
                 continue
             key, _, value = line.partition("=")
             os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def _flag(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
 
 
 def load_settings() -> Settings:
@@ -60,4 +68,9 @@ def load_settings() -> Settings:
         admin_password=env("KP_ADMIN_PASSWORD", ""),
         timezone=env("KP_TIMEZONE", "Asia/Kolkata"),
         gemini_embed_model=env("GEMINI_EMBED_MODEL", "gemini-embedding-001"),
+        gemini_tts_models=tuple(m.strip() for m in env(
+            "GEMINI_TTS_MODELS", "gemini-3.8-flash-tts,gemini-3.1-flash-tts-preview").split(",") if m.strip()),
+        gemini_tts_voice=env("GEMINI_TTS_VOICE", "Kore"),
+        voice_replies=_flag(env("KP_VOICE_REPLIES", "")),
+        demo_mode=_flag(env("KP_DEMO_MODE", "")),
     )

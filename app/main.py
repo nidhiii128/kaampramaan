@@ -5,18 +5,20 @@ import secrets
 from datetime import date
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from . import demo as demo_tools
 from . import ledger
 from .ai import AI
 from .chat import Bot, Inbound
 from .config import Settings, load_settings
-from .db import Database
+from .db import WAGE_CASE_STATUSES, Database
 from .recommend import CachedEmbedder, GeminiEmbedder
-from .records import rupees, summarise
+from .records import live_entries, rupees, summarise
+from .voice import speakable, wav_to_ogg
 from .whatsapp import WhatsAppClient, parse_webhook, verify_signature
 
 log = logging.getLogger("kaampramaan")
@@ -27,7 +29,8 @@ def create_app(settings: Settings | None = None, ai: AI | None = None, today_fn=
     s = settings or load_settings()
     today_fn = today_fn or s.today
     db = Database(s.db_path)
-    ai = ai or AI(s.gemini_api_key, s.gemini_model, s.gemini_fallback_models)
+    ai = ai or AI(s.gemini_api_key, s.gemini_model, s.gemini_fallback_models, s.gemini_tts_models,
+                  s.gemini_tts_voice)
     embedder = CachedEmbedder(db, GeminiEmbedder(ai.client, s.gemini_embed_model) if ai.client else None)
     bot = Bot(db=db, ai=ai, media_dir=s.media_dir, public_base_url=s.public_base_url, today_fn=today_fn,
               embedder=embedder)
@@ -82,14 +85,29 @@ def create_app(settings: Settings | None = None, ai: AI | None = None, today_fn=
                     msg.audio, msg.audio_mime = data, mime.split(";")[0]
                 else:
                     msg.image, msg.image_mime = data, mime
-            for r in bot.handle(msg):
+            replies = bot.handle(msg)
+            for r in replies:
                 if r.document_url:
                     wa.send_document(m.phone, r.document_url, r.document_name or "record.pdf", r.text)
                 else:
                     wa.send_text(m.phone, r.text)
+            if s.voice_replies and m.type == "audio" and replies:
+                send_voice_reply(m.phone, replies[0].text)   # a worker who speaks gets spoken answers
         except Exception:
             log.exception("failed to process WhatsApp message %s", m.message_id)
             wa.send_text(m.phone, "Sorry, kuch galat ho gaya. Something went wrong, please try again.")
+
+    def send_voice_reply(phone: str, text: str):
+        """Gemini TTS -> WAV -> ogg/opus -> WhatsApp. Any failure just means the worker keeps the text reply."""
+        try:
+            wav = ai.speak(speakable(text))
+            ogg = wav_to_ogg(wav) if wav else None
+            if ogg:
+                wa.send_audio(phone, ogg)
+            else:
+                log.warning("voice reply skipped (no audio from Gemini, or ffmpeg missing)")
+        except Exception:
+            log.exception("voice reply failed")
 
     # ------------------------------------------------------------------ documents (link sent on WhatsApp)
     @app.get("/d/{token}.pdf")
@@ -117,8 +135,9 @@ def create_app(settings: Settings | None = None, ai: AI | None = None, today_fn=
             "eligible": sum(1 for r in rows if r["s"].welfare_eligible),
             "days": sum(r["s"].days_worked for r in rows),
         }
-        return tpl.TemplateResponse(request, "dashboard.html",
-                                    {"rows": rows, "totals": totals, "cases": db.list_cases(), "ai": ai.enabled})
+        return tpl.TemplateResponse(request, "dashboard.html", {
+            "rows": rows, "totals": totals, "cases": db.list_cases(), "ai": ai.enabled,
+            "impact": db.impact_stats(), "wage_cases": db.list_wage_cases(), "statuses": WAGE_CASE_STATUSES})
 
     @app.get("/workers/{worker_id}")
     def worker_page(worker_id: int, request: Request, user: str = Depends(staff)):
@@ -229,6 +248,153 @@ def create_app(settings: Settings | None = None, ai: AI | None = None, today_fn=
     def openings_close(opening_id: int, user: str = Depends(staff)):
         db.close_opening(opening_id)
         return RedirectResponse("/openings", status_code=303)
+
+    # ------------------------------------------------------------------ wage complaint follow-up
+    @app.post("/cases/{case_id}")
+    def update_case(case_id: int, status: str = Form(...), amount_recovered: int = Form(0),
+                    user: str = Depends(staff)):
+        """An NGO marks a complaint filed / resolved and records the money recovered. The recovered amount is
+        added to the worker's ledger as a payment, so their balance and every PDF stay in step."""
+        case = db.get_case(case_id)
+        if not case or case["kind"] != "wage_complaint":
+            _404()
+        if status not in WAGE_CASE_STATUSES:
+            raise HTTPException(400, "bad status")
+        before = case["amount_recovered"] or 0
+        if not (before <= amount_recovered <= 10_000_000):
+            raise HTTPException(400, "recovered amount can only go up (the ledger is append-only)")
+        delta = amount_recovered - before
+        db.update_case(case_id, status, amount_recovered)
+        if delta:
+            try:
+                ledger.append(db, ledger.NewEntry(
+                    worker_id=case["worker_id"], kind="payment", work_date=today_fn().isoformat(), amount=delta,
+                    source="ngo", transcript=f"Recovered through complaint case #{case_id} (recorded by {user})"))
+            except Exception:
+                db.update_case(case_id, case["status"], before)   # keep case and ledger in step
+                raise
+            worker = db.get_worker(case["worker_id"])
+            if worker and worker["phone"]:
+                wa.send_text(worker["phone"], f"Aapke Rs. {rupees(delta)} mile aur record mein jod diye gaye "
+                                              f"(case #{case_id}). Rs. {rupees(delta)} recovered and added to your record.")
+        return RedirectResponse("/dashboard#cases", status_code=303)
+
+    # ------------------------------------------------------------------ public demo sandbox (KP_DEMO_MODE=1)
+    if s.demo_mode:
+        send_limit = demo_tools.RateLimiter(30, 600)
+        speak_limit = demo_tools.RateLimiter(12, 600)
+        tampered: dict[str, tuple[int, int]] = {}          # visitor -> (entry id, original amount)
+
+        def visitor_id(request: Request) -> str:
+            vid = request.cookies.get(demo_tools.COOKIE, "")
+            if not demo_tools.VISITOR_RE.match(vid):
+                raise HTTPException(400, "Open /demo first")
+            return vid
+
+        def throttle(request: Request, limiter):
+            ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+                  or (request.client.host if request.client else "?"))
+            if not limiter.allow(ip):
+                raise HTTPException(429, "Too many requests. Please wait a few minutes.")
+
+        def demo_worker(request: Request):
+            return demo_tools.ensure_worker(db, demo_tools.demo_phone(visitor_id(request)))
+
+        @app.get("/demo")
+        def demo_page(request: Request):
+            vid = request.cookies.get(demo_tools.COOKIE, "")
+            if not demo_tools.VISITOR_RE.match(vid):
+                vid = demo_tools.new_visitor_id()
+            db.purge_stale_demo(24)
+            demo_tools.ensure_worker(db, demo_tools.demo_phone(vid))
+            resp = tpl.TemplateResponse(request, "demo.html", {"ai": ai.client is not None})
+            resp.set_cookie(demo_tools.COOKIE, vid, max_age=6 * 3600, httponly=True, samesite="lax",
+                            secure=s.public_base_url.startswith("https"))
+            return resp
+
+        @app.post("/demo/send")
+        async def demo_send(request: Request, text: str = Form(""), file: UploadFile | None = File(None)):
+            worker = demo_worker(request)
+            throttle(request, send_limit)
+            msg = Inbound(phone=worker["phone"], text=text.strip()[:1000] or None, source="demo")
+            if file is not None and file.filename:
+                data = await file.read(demo_tools.MAX_UPLOAD + 1)
+                if len(data) > demo_tools.MAX_UPLOAD:
+                    raise HTTPException(413, "file too large")
+                mime = (file.content_type or "").split(";")[0]
+                if mime.startswith("audio/"):
+                    msg.audio, msg.audio_mime = data, mime
+                elif mime.startswith("image/"):
+                    msg.image, msg.image_mime = data, mime
+            replies = bot.handle(msg)
+            return JSONResponse([{"text": r.text, "document_url": (r.document_url or "").replace(s.public_base_url, "") or None}
+                                 for r in replies])
+
+        @app.get("/demo/ledger")
+        def demo_ledger(request: Request):
+            worker = demo_worker(request)
+            entries = db.list_entries(worker["id"])
+            sm = summarise(entries, today=today_fn())
+            chain = ledger.verify_chain(db, worker["id"], media_reader=_read_file)
+            return {
+                "chain": {"ok": chain.ok, "entries_checked": chain.entries_checked,
+                          "broken_at_seq": chain.broken_at_seq, "reason": chain.reason},
+                "summary": {"days": sm.days_worked, "earned": sm.earned, "received": sm.paid, "due": sm.due,
+                            "cancelled": sm.cancelled_entries},
+                "entries": [{"seq": e["seq"], "kind": e["kind"], "date": e["work_date"], "amount": e["amount"],
+                             "paid": bool(e["paid"]), "contractor": e["contractor"], "ref": e["hash"][:12],
+                             "said": e["transcript"], "void_of": e["void_of"]} for e in entries][-40:],
+                "tampered": visitor_id(request) in tampered,
+            }
+
+        @app.post("/demo/tamper")
+        def demo_tamper(request: Request):
+            """Edit a past entry behind the ledger's back, the way a dishonest operator would, so the record
+            check can be seen catching it. Only ever touches this visitor's sandbox worker."""
+            worker = demo_worker(request)
+            vid = visitor_id(request)
+            if vid in tampered:
+                raise HTTPException(409, "Already tampered. Restore the entry or reset the demo.")
+            work = [e for e in live_entries(db.list_entries(worker["id"])) if e["kind"] == "work"]
+            if not work:
+                raise HTTPException(409, "Log a day of work first, then try to change it.")
+            target, new_amount = work[0], max(1, work[0]["amount"] // 10)
+            with db.connect() as c:
+                c.execute("UPDATE entries SET amount = ? WHERE id = ? AND worker_id = ?",
+                          (new_amount, target["id"], worker["id"]))
+            tampered[vid] = (target["id"], target["amount"])
+            return {"seq": target["seq"], "was": target["amount"], "now": new_amount}
+
+        @app.post("/demo/restore")
+        def demo_restore(request: Request):
+            worker = demo_worker(request)
+            vid = visitor_id(request)
+            if vid not in tampered:
+                raise HTTPException(409, "Nothing to restore")
+            entry_id, original = tampered.pop(vid)
+            with db.connect() as c:
+                c.execute("UPDATE entries SET amount = ? WHERE id = ? AND worker_id = ?",
+                          (original, entry_id, worker["id"]))
+            return {"restored": original}
+
+        @app.post("/demo/reset")
+        def demo_reset(request: Request):
+            vid = visitor_id(request)
+            db.purge_demo_worker(demo_tools.demo_phone(vid))
+            tampered.pop(vid, None)
+            demo_tools.ensure_worker(db, demo_tools.demo_phone(vid))
+            return {"reset": True}
+
+        @app.post("/demo/speak")
+        def demo_speak(request: Request, text: str = Form(...)):
+            demo_worker(request)
+            if ai.client is None:
+                raise HTTPException(503, "Voice replies need GEMINI_API_KEY")
+            throttle(request, speak_limit)
+            wav = ai.speak(speakable(text[:2000]))
+            if not wav:
+                raise HTTPException(502, "Text-to-speech is not available right now")
+            return Response(wav, media_type="audio/wav")
 
     # ------------------------------------------------------------------ chat simulator (demo without WhatsApp)
     @app.get("/simulator")

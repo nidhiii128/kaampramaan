@@ -343,6 +343,9 @@ class Bot:
         paragraph = self.ai.complaint_paragraph(facts)
         url = self._make_doc(worker, "complaint", lambda path: pdfs.complaint_pdf(
             path, worker, site, s, chain, corr, paragraph, today=self.today_fn()))
+        # tracked from here on: an NGO marks it filed and records what was recovered (website, /dashboard)
+        self.db.open_wage_case(worker["id"], s.due, f"{len(s.unpaid_days)} unpaid days, "
+                               f"{facts['from_date']} to {facts['to_date']}, {facts['contractor']}")
         return ToolOutcome(
             {"created": True, "due": s.due, "unpaid_days": len(s.unpaid_days),
              "from_date": facts["from_date"], "to_date": facts["to_date"], "pdf_attached": True,

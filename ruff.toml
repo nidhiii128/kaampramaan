@@ -1,0 +1,6 @@
+line-length = 130
+target-version = "py312"
+
+[lint]
+select = ["E", "F"]
+ignore = ["E501", "E731"]      # long lines and small lambdas are style, not bugs

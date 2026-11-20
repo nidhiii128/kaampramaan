@@ -20,11 +20,14 @@ contractor does not pay, that record becomes the complaint.
 
 ## Demo script (rehearse this, it is the whole pitch)
 
-1. Chat simulator or real WhatsApp: voice note "Aaj Ramesh ke saath kaam kiya, 700, abhi nahi mile". Reply shows days, amount due and a `Ref:`.
+0. Judges can do this themselves: open `/demo` (set `KP_DEMO_MODE=1`), no login, microphone built in, the stored record shown beside the chat.
+1. `/demo` or real WhatsApp: voice note "Aaj Ramesh ke saath kaam kiya, 700, abhi nahi mile". Reply shows days, amount due and a `Ref:`.
 2. Say it wrong on purpose ("7000"), then send "galat, 700 tha". Show it cancelled and re-logged in one message. Point out: nothing was deleted.
 3. "Ramesh ne paisa nahi diya" -> complaint PDF arrives. Open it: unpaid days, co-worker counts, reference codes, "Verified: all entries intact".
-4. **Tamper moment.** In a terminal: `sqlite3 data/kaampramaan.db "UPDATE entries SET amount = 100 WHERE seq = 1"`. Refresh the worker page: record check turns red and names the broken entry. This is the proof that the record cannot be quietly rewritten.
+4. **Tamper moment.** On `/demo` press **Change a past entry**: an entry is edited behind the system's back and the record check turns red and names the broken entry. This is the proof that the record cannot be quietly rewritten. Press **Put it back** to heal it.
 5. "Kaam chahiye" -> top 3 openings, one with a warning that workers reported unpaid wages from that contractor.
+6. Staff dashboard: the complaint is already a tracked case. Mark it filed, record Rs. 1,400 recovered: the worker's balance drops, they get a WhatsApp message, and the **wages recovered** tile moves. That is the outcome the whole system exists for.
+7. Press **Listen** on a reply (or send a voice note with `KP_VOICE_REPLIES=1`): Gemini answers in speech, for workers who do not read comfortably.
 
 If WhatsApp or Gemini fails on stage: the simulator and the offline parser run the same code path. Keep a screen recording as backup.
 
@@ -55,7 +58,7 @@ The record is only useful if it is trusted, so trust is the product: a hash-chai
 
 ## Built on Google
 
-Gemini audio understanding (no separate speech-to-text), Gemini function calling for the agent, Gemini embeddings for work matching, Cloud Run for the app. Scale path: Cloud SQL or Firestore for the ledger, Cloud Storage for voice notes and PDFs.
+Gemini audio understanding (no separate speech-to-text), Gemini function calling for the agent (8 tools), Gemini vision for site boards, Gemini embeddings for work matching, Gemini text-to-speech for voice replies, Cloud Run for the app. Extraction accuracy is measured by `scripts/eval_extraction.py` (offline baseline 44% whole-message; fill in the Gemini number after running it with your key). Scale path: Cloud SQL or Firestore for the ledger, Cloud Storage for voice notes and PDFs.
 
 ## Pilot plan (the first 30 days after the buildathon)
 

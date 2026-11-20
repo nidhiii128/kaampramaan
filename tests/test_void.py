@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from app import ledger
-from app.chat import Bot, Inbound
+from app.chat import Inbound
 from app.db import Database
 from app.records import live_entries, summarise
 from tests.conftest import TODAY

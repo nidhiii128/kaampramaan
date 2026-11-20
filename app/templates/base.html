@@ -7,15 +7,16 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <a class="skip" href="#main">Skip to content</a>
   <header class="top">
     <a class="brand" href="/dashboard">KaamPramaan</a>
-    <nav>
+    <nav aria-label="Main">
       <a href="/dashboard">Workers</a>
       <a href="/volunteer">Log for a group</a>
       <a href="/openings">Work openings</a>
       <a href="/simulator">Chat simulator</a>
     </nav>
   </header>
-  <main>{% block content %}{% endblock %}</main>
+  <main id="main">{% block content %}{% endblock %}</main>
 </body>
 </html>

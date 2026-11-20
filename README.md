@@ -12,6 +12,13 @@ of each working day and turns it into a wage complaint or a welfare board work r
 The same record helps workers find their next job: openings are ranked so that contractors who have
 not paid wages logged by other workers come lower.
 
+## Try it (no login)
+
+Set `KP_DEMO_MODE=1` and open `/demo`. Each visitor gets a private sandbox worker: talk to the bot by typing or
+with the microphone, watch the stored record update beside the chat, generate a complaint PDF, and press
+**Change a past entry** to see the record check catch the tampering. Demo data is kept out of the real dashboard
+and contractor scores, rate-limited per IP, and deleted after 24 hours.
+
 ## What it does
 
 | Who | How | What they get |
@@ -49,8 +56,8 @@ Volunteer form ─────► POST /volunteer ──────────
 
 Design choices worth knowing:
 
-- **Gemini is an agent with tools, but never does the maths.** For a daily message Gemini picks from six tools
-  (`log_work`, `record_payment`, `get_balance`, `make_complaint`, `make_work_record`, `report_death`) and can call
+- **Gemini is an agent with tools, but never does the maths.** For a daily message Gemini picks from eight tools
+  (`log_work`, `record_payment`, `void_last_entry`, `get_balance`, `make_complaint`, `make_work_record`, `find_work`, `report_death`) and can call
   more than one, for example "worked yesterday for 700, and Ramesh gave 500 today". The tools run in plain Python
   against the ledger and their results go back to Gemini, which writes a short reply in the worker's language.
   Tool arguments are range-checked before anything is saved. All money and eligibility calculations are plain Python,
@@ -82,6 +89,44 @@ Design choices worth knowing:
   moves to the next model in `GEMINI_FALLBACK_MODELS`. If every model fails, text messages still go through the
   offline parser, so a busy API never loses a worker's entry.
 - **Works offline for development.** Without a Gemini key, a rule-based English/Hinglish parser handles text messages.
+
+## How Gemini is used
+
+| Capability | Where | Why |
+|---|---|---|
+| Audio understanding | `app/ai.py` `understand`, `run_agent` | A worker's voice note goes straight to Gemini (Hindi, Bhojpuri, Bengali, Marathi, English). No separate speech-to-text step. |
+| Function calling (agent) | `run_agent`, 8 tools | Gemini chooses which tool to run, even several in one message ("galat, 700 tha"). Tools do the maths in Python. |
+| Structured output | `understand`, `read_board` | JSON schema for intent, wage, amounts; the site board photo becomes project, owner and contractor. |
+| Vision | `read_board` | A photo of the site board identifies the principal employer, which the complaint is addressed to. |
+| Embeddings | `app/recommend.py` | Matches "rang rogan ka kaam" to openings by meaning. |
+| Text-to-speech | `ai.speak`, `app/voice.py` | Workers who send a voice note get a spoken answer (`KP_VOICE_REPLIES=1`), and the demo has a Listen button. Models are tried in `GEMINI_TTS_MODELS` order; check yours with `python -m scripts.check_gemini --tts`. |
+
+Guardrails around the model: it never does the arithmetic, replies with a number the tools did not produce are
+thrown away, and every failure falls back to the offline parser or the fixed reply, so a busy API never loses an
+entry.
+
+**Measured, not claimed.** `python -m scripts.eval_extraction` runs 34 hand-written messages in five languages
+through the extraction step. Offline rule-based parser baseline (no Gemini), 20 Nov 2026:
+
+| Language | Intent correct |
+|---|---|
+| English | 88% |
+| Hinglish | 100% |
+| Bhojpuri | 0% |
+| Bengali | 20% |
+| Marathi | 0% |
+
+Whole message right (intent, wage, paid, amount): 44%. Number words like "saat sau" (700) and non-Hindi dialects are
+where the rules fail, which is the case for using Gemini. Run the script with your key to fill in the Gemini
+numbers: `python -m scripts.eval_extraction --json gemini.json`. The cases are written by the team, not collected
+from real workers.
+
+## From complaint to recovered wages
+
+Asking for a complaint ("Ramesh has not paid me") generates the PDF and opens a tracked case on the dashboard.
+An NGO marks it filed, then records the amount recovered. That amount is appended to the worker's ledger as a
+payment (source "ngo"), their balance and every PDF update, and they get a WhatsApp message. The dashboard
+shows wages claimed, wages recovered and the recovery rate, which is the project's outcome measure.
 
 ## Finding work (recommendations)
 
@@ -177,7 +222,9 @@ For a real deployment, move storage to Firestore or Cloud SQL and media to Cloud
 ```
 app/
   main.py        FastAPI routes: webhook, website, simulator, PDF links
-  chat.py        conversation logic, shared by WhatsApp, simulator and future voice line
+  chat.py        conversation logic, shared by WhatsApp, simulator, demo and future voice line
+  voice.py       Gemini TTS audio to WAV / ogg-opus, text trimming for speech
+  demo.py        public sandbox: visitor ids, rate limiter
   ai.py          Gemini agent with tools, JSON schemas, number guard, offline parser
   ledger.py      hash-chained entries and verification
   records.py     totals, unpaid days, welfare eligibility
@@ -187,7 +234,8 @@ app/
   db.py          SQLite schema and queries
   templates/     website pages
 scripts/seed_demo.py
-tests/           ledger, void/cancel, records, parser, agent tool calls, full conversation, webhook, website
+.github/         CI: lint, tests, offline eval, Docker build
+tests/           ledger, void/cancel, cases, demo, voice, records, parser, agent tool calls, full conversation, webhook, website
 ```
 
 ## Legal wording
@@ -201,7 +249,7 @@ complaint, they do not replace an employer's muster roll.
 ## Roadmap
 
 - Firestore and Cloud Storage instead of SQLite and local files
-- Replies as voice notes in the worker's language (Gemini text-to-speech)
+- Read a photo of a handwritten wage notebook into entries (Gemini vision) with a confirm step
 - Missed-call voice line for keypad phones
 - Learn ranking weights from which recommended openings workers actually call
 - Rules for each state's welfare board forms

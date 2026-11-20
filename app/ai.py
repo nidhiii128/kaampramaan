@@ -199,11 +199,16 @@ def numbers_in(text: str) -> set[int]:
 
 class AI:
     def __init__(self, api_key: str = "", model: str = "gemini-3.8-flash",
-                 fallback_models: tuple[str, ...] = ("gemini-3.5-flash",)):
+                 fallback_models: tuple[str, ...] = ("gemini-3.5-flash",),
+                 tts_models: tuple[str, ...] = ("gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview"),
+                 tts_voice: str = "Kore"):
         # Try the main model first; on overload (503), rate limit (429) or a retired model (404)
         # move to the next one, so a busy model does not stop workers from logging.
         self.models = [model] + [m for m in fallback_models if m and m != model]
         self.model = model
+        self.tts_models = [m for m in tts_models if m]
+        self.tts_voice = tts_voice
+        self.last_tts_model: str | None = None      # which TTS model produced the latest voice reply
         self.client = None
         if api_key:
             from google import genai  # imported lazily so tests do not need network setup
@@ -339,6 +344,31 @@ class AI:
             log.warning("Agent reply used a number no tool returned, sending fixed replies: %r", out)
             return None
         return out
+
+    # ---------- voice replies ----------
+    def speak(self, text: str) -> bytes | None:
+        """Read a short reply aloud with Gemini text-to-speech. Returns WAV bytes, or None if every TTS
+        model fails, so callers can fall back to the text reply."""
+        if not self.client or not (text or "").strip():
+            return None
+        from google.genai import types
+
+        from .voice import pcm_to_wav, rate_from_mime
+        config = types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self.tts_voice))),
+        )
+        for model in self.tts_models:
+            try:
+                resp = self.client.models.generate_content(model=model, contents=text, config=config)
+                blob = resp.candidates[0].content.parts[0].inline_data
+                if blob and blob.data:
+                    self.last_tts_model = model
+                    return pcm_to_wav(blob.data, rate=rate_from_mime(getattr(blob, "mime_type", None)))
+            except Exception:
+                log.exception("Gemini TTS model %s failed, trying the next one", model)
+        return None
 
     # ---------- site board photos ----------
     def read_board(self, image: bytes, mime: str = "image/jpeg") -> BoardInfo:

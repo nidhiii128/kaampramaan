@@ -3,7 +3,9 @@
 <h1>Workers</h1>
 {% if not ai %}<p class="note">Running without Gemini: text messages use the built-in parser, voice notes and board photos need GEMINI_API_KEY.</p>{% endif %}
 
-<section class="stats">
+<section class="stats" aria-label="Impact">
+  <div class="stat good"><span>Rs. {{ impact.recovered|rupees }}</span>wages recovered ({{ impact.recovery_rate }}% of Rs. {{ impact.claimed|rupees }} claimed)</div>
+  <div class="stat"><span>{{ impact.complaints }}</span>complaints ({{ impact.by_status.filed }} filed, {{ impact.by_status.resolved }} resolved)</div>
   <div class="stat"><span>{{ totals.workers }}</span>workers</div>
   <div class="stat"><span>{{ totals.days }}</span>working days recorded</div>
   <div class="stat"><span>Rs. {{ totals.due|rupees }}</span>wages due</div>
@@ -26,6 +28,34 @@
     </tr>
   {% else %}
     <tr><td colspan="7">No workers yet. Send a message from the chat simulator or log a group.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2 id="cases">Wage complaints</h2>
+<p class="muted">Generated automatically when a worker asks for a complaint. Mark it filed, then record what was recovered: the amount is added to the worker's record and they are told on WhatsApp.</p>
+<table>
+  <caption class="sr-only">Wage complaints and their status</caption>
+  <thead><tr><th scope="col">Worker</th><th scope="col">Details</th><th scope="col">Claimed</th><th scope="col">Recovered</th><th scope="col">Update</th></tr></thead>
+  <tbody>
+  {% for c in wage_cases %}
+    <tr>
+      <td><a href="/workers/{{ c.worker_id }}">{{ c.worker_name or "(unnamed)" }}</a><br><small class="muted">{{ c.worker_village or "" }}</small></td>
+      <td>{{ c.details }}<br><small class="muted">opened {{ c.created_at[:10] }}</small></td>
+      <td>Rs. {{ (c.amount_claimed or 0)|rupees }}</td>
+      <td>Rs. {{ c.amount_recovered|rupees }}</td>
+      <td>
+        <form method="post" action="/cases/{{ c.id }}" class="inline">
+          <label class="sr-only" for="st{{ c.id }}">Status</label>
+          <select id="st{{ c.id }}" name="status">{% for st in statuses %}<option {% if st == c.status %}selected{% endif %}>{{ st }}</option>{% endfor %}</select>
+          <label class="sr-only" for="rec{{ c.id }}">Total recovered in rupees</label>
+          <input id="rec{{ c.id }}" name="amount_recovered" type="number" min="{{ c.amount_recovered }}" value="{{ c.amount_recovered }}" step="1">
+          <button class="secondary">Save</button>
+        </form>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5">No complaints yet. They appear when a worker says "Ramesh has not paid me".</td></tr>
   {% endfor %}
   </tbody>
 </table>

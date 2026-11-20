@@ -4,7 +4,7 @@ Usage: python -m scripts.seed_demo   (uses KP_DB_PATH, default data/kaampramaan.
 All names and numbers here are made up for the demo.
 """
 import random
-from datetime import date, timedelta
+from datetime import timedelta
 
 from app import ledger
 from app.config import load_settings
