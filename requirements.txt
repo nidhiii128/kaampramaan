@@ -8,3 +8,4 @@ fpdf2==2.9.0
 pydantic>=2.9
 pytest>=8.0
 tzdata>=2024.1
+qrcode==8.2

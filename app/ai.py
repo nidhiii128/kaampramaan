@@ -53,6 +53,32 @@ class BoardInfo(BaseModel):
     location: Optional[str] = None
 
 
+class MusterRow(BaseModel):
+    name: str = Field(description="Worker's name as written in the register, in Latin script")
+    present_days: list[int] = Field(default_factory=list,
+                                    description="Day-of-month numbers (1-31) marked present for this worker")
+
+
+class MusterSheet(BaseModel):
+    is_muster_roll: bool = False
+    month: Optional[int] = Field(None, description="Month 1-12 from the register header, if written")
+    year: Optional[int] = Field(None, description="Four-digit year from the register header, if written")
+    rows: list[MusterRow] = Field(default_factory=list)
+    notes: Optional[str] = Field(None, description="Cells or names that could not be read")
+
+
+MUSTER_PROMPT = """This is a photo of a paper attendance register (muster roll, haziri register) from a construction
+site in India. Usually there is one row per worker and one column per day of the month. Present is marked with P,
+a tick, 1, a signature or a thumb mark; absent with A, a dash, a cross or an empty cell. The register may be in
+Hindi, English or another Indian language.
+
+For each worker row return the name (romanised to Latin script) and the day numbers marked present.
+Known workers at this site (if a written name is clearly one of these, spell it exactly like this): {known}.
+Read the month and year from the header if they are written; otherwise leave them empty.
+Never invent a row or a day. If a cell or a name cannot be read, leave it out and say so in notes.
+If this is not an attendance register, set is_muster_roll to false and return no rows."""
+
+
 UNDERSTAND_PROMPT = """You help daily-wage construction workers in India keep a record of their work.
 Today is {today}. The worker may speak Hindi, Bhojpuri, Bengali, Odia, Marathi, English or a mix.
 Classify the message and extract facts. Do not guess numbers that were not said.
@@ -145,7 +171,8 @@ TOOLS = [
     },
     {
         "name": "make_work_record",
-        "description": "Create the work record PDF used for welfare board registration (90 days rule).",
+        "description": "Create the pre-filled welfare board registration application with the 90-day work "
+                       "certificate (PDF). Use when they ask about registration, labour card or the welfare board.",
         "parameters": {"type": "object", "properties": {}},
     },
     {
@@ -199,11 +226,16 @@ def numbers_in(text: str) -> set[int]:
 
 class AI:
     def __init__(self, api_key: str = "", model: str = "gemini-3.8-flash",
-                 fallback_models: tuple[str, ...] = ("gemini-3.5-flash",)):
+                 fallback_models: tuple[str, ...] = ("gemini-3.5-flash",),
+                 tts_models: tuple[str, ...] = ("gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview"),
+                 tts_voice: str = "Kore"):
         # Try the main model first; on overload (503), rate limit (429) or a retired model (404)
         # move to the next one, so a busy model does not stop workers from logging.
         self.models = [model] + [m for m in fallback_models if m and m != model]
         self.model = model
+        self.tts_models = [m for m in tts_models if m]
+        self.tts_voice = tts_voice
+        self.last_tts_model: str | None = None      # which TTS model produced the latest voice reply
         self.client = None
         if api_key:
             from google import genai  # imported lazily so tests do not need network setup
@@ -340,6 +372,31 @@ class AI:
             return None
         return out
 
+    # ---------- voice replies ----------
+    def speak(self, text: str) -> bytes | None:
+        """Read a short reply aloud with Gemini text-to-speech. Returns WAV bytes, or None if every TTS
+        model fails, so callers can fall back to the text reply."""
+        if not self.client or not (text or "").strip():
+            return None
+        from google.genai import types
+
+        from .voice import pcm_to_wav, rate_from_mime
+        config = types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self.tts_voice))),
+        )
+        for model in self.tts_models:
+            try:
+                resp = self.client.models.generate_content(model=model, contents=text, config=config)
+                blob = resp.candidates[0].content.parts[0].inline_data
+                if blob and blob.data:
+                    self.last_tts_model = model
+                    return pcm_to_wav(blob.data, rate=rate_from_mime(getattr(blob, "mime_type", None)))
+            except Exception:
+                log.exception("Gemini TTS model %s failed, trying the next one", model)
+        return None
+
     # ---------- site board photos ----------
     def read_board(self, image: bytes, mime: str = "image/jpeg") -> BoardInfo:
         if not self.client:
@@ -355,6 +412,25 @@ class AI:
         except Exception:
             log.exception("Gemini board reading failed")
             return BoardInfo(is_site_board=False)
+
+    # ---------- muster register photos ----------
+    def read_muster(self, image: bytes, mime: str = "image/jpeg", known_names: list[str] | None = None) -> MusterSheet:
+        """Gemini vision reads a handwritten attendance register into rows. The result is only a draft:
+        app/muster.py range-checks it and a person reviews it before anything is saved."""
+        if not self.client:
+            return MusterSheet(is_muster_roll=False, notes="Reading register photos needs GEMINI_API_KEY")
+        from google.genai import types
+        known = ", ".join(sorted(set(known_names or []))[:200]) or "none yet"
+        try:
+            resp = self._generate(
+                [MUSTER_PROMPT.format(known=known), types.Part.from_bytes(data=image, mime_type=mime)],
+                types.GenerateContentConfig(
+                    response_mime_type="application/json", response_schema=MusterSheet, temperature=0),
+            )
+            return resp.parsed if isinstance(resp.parsed, MusterSheet) else MusterSheet(**json.loads(resp.text))
+        except Exception:
+            log.exception("Gemini muster reading failed")
+            return MusterSheet(is_muster_roll=False, notes="Could not read the photo, please try a clearer one")
 
     # ---------- complaint wording ----------
     def complaint_paragraph(self, facts: dict) -> str:

@@ -88,6 +88,19 @@ class WhatsAppClient:
             doc["caption"] = caption[:1024]
         self._send({"messaging_product": "whatsapp", "to": to, "type": "document", "document": doc})
 
+    def send_audio(self, to: str, ogg: bytes):
+        """Upload an ogg/opus voice note, then send it."""
+        if not self.configured:
+            log.info("WhatsApp not configured; would send a %d byte voice note to %s", len(ogg), to)
+            return
+        with httpx.Client(timeout=30) as c:
+            up = c.post(f"{GRAPH}/{self.s.wa_api_version}/{self.s.wa_phone_number_id}/media",
+                        headers=self._headers(), data={"messaging_product": "whatsapp", "type": "audio/ogg"},
+                        files={"file": ("reply.ogg", ogg, "audio/ogg")})
+            up.raise_for_status()
+            media_id = up.json()["id"]
+        self._send({"messaging_product": "whatsapp", "to": to, "type": "audio", "audio": {"id": media_id}})
+
     def _send(self, payload: dict):
         if not self.configured:
             log.info("WhatsApp not configured; would send: %s", payload)

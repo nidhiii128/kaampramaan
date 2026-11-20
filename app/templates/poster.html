@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="hi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QR poster - {{ site.project or site.code }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="poster-page">
+  <p class="no-print"><a href="/sites/{{ site.id }}">&larr; Back to site</a> &middot; <button type="button" onclick="window.print()">Print poster</button></p>
+  {% if not wa_number %}<p class="note no-print" role="note">KP_WA_NUMBER is not set, so this QR opens WhatsApp without a chat selected. Set it to your WhatsApp Business number before printing.</p>{% endif %}
+  <main class="poster">
+    <h1>Haziri lagaiye <span lang="en">/ Mark your attendance</span></h1>
+    <p class="poster-site">{{ site.project or "" }}</p>
+    <div class="qr" role="img" aria-label="QR code that opens WhatsApp with the text {{ check_in_text }}">{{ qr_svg|safe }}</div>
+    <ol class="poster-steps">
+      <li>Phone ka camera kholiye aur QR par rakhiye. <span lang="en">Open your phone camera and point it at the QR.</span></li>
+      <li>WhatsApp khulega. Bas <b>Send</b> dabaiye. <span lang="en">WhatsApp opens. Just press <b>Send</b>.</span></li>
+      <li>Roz kijiye. 90 din confirm hone par welfare board ka form taiyaar. <span lang="en">Do it every day. After 90 confirmed days your welfare board form is ready.</span></li>
+    </ol>
+    <p class="poster-code">QR nahi chal raha? WhatsApp karein: <b>{{ check_in_text }}</b>{% if wa_number %} &rarr; +{{ wa_number }}{% endif %}</p>
+    <p class="poster-foot">KaamPramaan &middot; Free for workers &middot; Aapka record sirf aapka</p>
+  </main>
+</body>
+</html>

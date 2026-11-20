@@ -4,7 +4,9 @@ Usage:
   python -m scripts.check_gemini                      # text messages only
   python -m scripts.check_gemini --audio note.ogg     # also a voice note
   python -m scripts.check_gemini --image board.jpg    # also a site board photo
+  python -m scripts.check_gemini --muster page.jpg   # also a photo of a paper attendance register
   python -m scripts.check_gemini --agent              # also the tool-calling agent
+  python -m scripts.check_gemini --tts                # also a Gemini voice reply, saved as tts_test.wav
 """
 import argparse
 import mimetypes
@@ -30,13 +32,15 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--audio")
     p.add_argument("--image")
+    p.add_argument("--muster")
     p.add_argument("--agent", action="store_true")
+    p.add_argument("--tts", action="store_true")
     args = p.parse_args()
 
     s = load_settings()
     if not s.gemini_api_key:
         sys.exit("GEMINI_API_KEY is empty. Add it to .env first.")
-    ai = AI(s.gemini_api_key, s.gemini_model, s.gemini_fallback_models)
+    ai = AI(s.gemini_api_key, s.gemini_model, s.gemini_fallback_models, s.gemini_tts_models, s.gemini_tts_voice)
 
     names = [m.name for m in ai.client.models.list()]
     flash = sorted(n for n in names if "flash" in n)
@@ -69,8 +73,27 @@ def main():
         with open(args.image, "rb") as f:
             print(f"\n> board photo {args.image}\n  {ai.read_board(f.read(), mime).model_dump()}")
 
+    if args.muster:
+        from app.muster import clean_sheet
+        mime = mimetypes.guess_type(args.muster)[0] or "image/jpeg"
+        with open(args.muster, "rb") as f:
+            raw = ai.read_muster(f.read(), mime)
+        print(f"\n> muster register {args.muster}\n  Gemini read: {raw.model_dump()}")
+        print(f"  after range checks: {clean_sheet(raw, today)}")
+
     if args.agent:
         check_agent(ai, today)
+
+    if args.tts:
+        wav = ai.speak("Aapke saat sau rupaye baaki hain. Aapka record save ho gaya.")
+        if wav:
+            with open("tts_test.wav", "wb") as f:
+                f.write(wav)
+            print(f"\nVoice reply OK with {ai.last_tts_model} ({len(wav)} bytes), saved to tts_test.wav. Play it.")
+        else:
+            print(f"\nVoice reply FAILED for every model in GEMINI_TTS_MODELS={','.join(ai.tts_models)}. "
+                  "Check the model names in the Gemini docs (ai.google.dev/gemini-api/docs/speech-generation) "
+                  "and the log above, then set GEMINI_TTS_MODELS in .env.")
 
 
 AGENT_TEXTS = [

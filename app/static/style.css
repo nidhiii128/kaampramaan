@@ -1,6 +1,6 @@
 :root {
   --ink: #1f2328; --muted: #5f6368; --line: #e3e6ea; --bg: #f6f7f9;
-  --blue: #1a73e8; --green: #188038; --red: #c5221f; --amber: #b06000;
+  --blue: #1558b0; --green: #188038; --red: #c5221f; --amber: #b06000;
 }
 * { box-sizing: border-box; }
 body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--ink); background: var(--bg); }
@@ -52,3 +52,64 @@ button:disabled { background: #c9ced4; cursor: not-allowed; }
 .hints { margin-top: 10px; }
 .hints .hint { background: #fff; color: var(--ink); border: 1px solid var(--line); font-size: 13px; padding: 5px 9px; }
 @media (max-width: 800px) { .row { grid-template-columns: 1fr; } table { font-size: 13px; } }
+
+/* accessibility: keyboard focus, screen-reader text, skip link, touch-size targets */
+:focus-visible { outline: 3px solid #f9ab00; outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.skip { position: absolute; left: -999px; top: 8px; background: #fff; padding: 8px 12px; border-radius: 8px; z-index: 10; }
+.skip:focus { left: 8px; }
+button, .file, select, input { min-height: 44px; }
+.muted { color: #4d5156; }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; animation: none !important; } }
+
+/* impact + complaint follow-up */
+.stat.good span { color: var(--green); }
+form.inline { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+form.inline input[type=number] { width: 110px; }
+form.inline button { margin: 0; }
+
+/* public demo */
+.lead { font-size: 17px; max-width: 780px; }
+.demo-grid { display: grid; grid-template-columns: minmax(300px, 460px) 1fr; gap: 28px; align-items: start; margin-top: 16px; }
+.chain { padding: 12px 14px; border-radius: 10px; font-weight: 600; margin-bottom: 12px; }
+.chain.ok { background: #e6f4ea; color: #0d652d; border: 1px solid #b7e1c1; }
+.chain.bad { background: #fce8e6; color: #a50e0e; border: 1px solid #f5b5b0; }
+.table-wrap { overflow-x: auto; }
+label.check { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: var(--ink); }
+label.check input { min-height: 0; width: 20px; height: 20px; }
+.msg .listen { background: #e8f0fe; color: var(--blue); padding: 4px 10px; min-height: 32px; margin: 6px 0 0; font-size: 13px; }
+#mic[aria-pressed="true"] { background: #c5221f; color: #fff; }
+h3 { font-size: 16px; margin: 22px 0 6px; }
+@media (max-width: 900px) { .demo-grid { grid-template-columns: 1fr; } }
+
+/* sites, board, QR poster, muster review */
+a.button { display: inline-flex; align-items: center; min-height: 44px; padding: 9px 14px; border-radius: 8px; background: var(--blue); color: #fff; text-decoration: none; }
+code.big { font-size: 22px; letter-spacing: 3px; color: var(--ink); font-weight: 700; }
+.daynav { display: flex; gap: 16px; margin-bottom: 8px; }
+.card ul { padding-left: 18px; margin: 6px 0 0; }
+.card h3 { margin-top: 0; }
+input.wide { min-width: 220px; }
+.review { display: grid; grid-template-columns: minmax(260px, 1fr) 1.4fr; gap: 20px; align-items: start; }
+.review img { max-width: 100%; height: auto; border-radius: 8px; display: block; }
+@media (max-width: 900px) { .review { grid-template-columns: 1fr; } }
+.poster-page { background: #fff; }
+.poster { max-width: 720px; margin: 0 auto; text-align: center; padding: 24px; }
+.poster h1 { font-size: 40px; line-height: 1.15; }
+.poster-site { font-size: 22px; font-weight: 600; margin: 4px 0 12px; }
+.qr { width: min(420px, 80vw); margin: 8px auto; background: #fff; padding: 8px; }
+.qr svg { width: 100%; height: auto; display: block; }
+.poster-steps { text-align: left; font-size: 20px; max-width: 600px; margin: 16px auto; }
+.poster-steps li { margin-bottom: 10px; }
+.poster-steps span { display: block; font-size: 16px; color: var(--muted); }
+.poster-code { font-size: 20px; }
+.poster-foot { color: var(--muted); margin-top: 24px; }
+.no-print { padding: 12px 24px; }
+@media print { .no-print { display: none; } .poster { padding: 0; } }
+
+/* demo: site QR and supervisor phone */
+.scan { display: flex; gap: 14px; align-items: center; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-top: 10px; }
+.scan p { margin: 0 0 6px; }
+.qr.small { width: 110px; flex: none; margin: 0; padding: 4px; }
+.hints .hint.primary, .scan .hint.primary { background: var(--blue); color: #fff; border: 0; }
+.chat.short { height: 190px; }
+.sup-actions button { margin-top: 0; }

@@ -2,16 +2,26 @@
 same logic serves WhatsApp, the web simulator and (later) a missed-call voice line."""
 import logging
 import os
+import re
 import secrets
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
 
-from . import ledger, pdfs
+from . import attest, ledger, muster, pdfs
 from .ai import AI, BoardInfo, Understanding, _clean
 from .db import Database
 from .recommend import CachedEmbedder, recommend
-from .records import live_entries, rupees, summarise
+from .records import WELFARE_DAYS_REQUIRED, live_entries, rupees, summarise, verify_days
+
+# What the site QR poster pre-fills in WhatsApp: "HAZIRI K7M2QX". Typing it works too.
+CHECK_IN_RE = re.compile(r"^\s*(?:haziri|hazri|hajiri|attendance|check[\s-]?in)\s*[:#-]?\s*([A-Za-z0-9]{6})\s*$", re.I)
+CONFIRM_RE = re.compile(r"^\s*(?:confirm|pushti|sahi|ok|theek)\b(.*)$", re.I)
+
+
+def _is_supervisor_command(text: str | None) -> bool:
+    t = (text or "").strip().lower()
+    return t.startswith("muster") or bool(CONFIRM_RE.match(t))
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +70,15 @@ class Bot:
     # ------------------------------------------------------------------ entry point
     def handle(self, msg: Inbound) -> list[Reply]:
         worker = self.db.get_worker_by_phone(msg.phone)
+
+        supervised = self.db.get_site_by_supervisor(msg.phone)
+        if supervised and (worker is None or msg.image or _is_supervisor_command(msg.text)):
+            return self._on_supervisor(supervised, msg)
+
+        code = CHECK_IN_RE.match(msg.text or "")
+        if code:
+            return self._on_check_in(worker, code.group(1).upper(), msg)
+
         if worker is None:
             self.db.create_worker(msg.phone, state="awaiting_name")
             return [Reply(
@@ -93,6 +112,11 @@ class Bot:
         if not u.name:
             return [Reply("Naam samajh nahi aaya. Please send your name and village again, e.g. "
                           "\"Raju Kumar, Bhojpur\".")]
+        site = self.db.get_site(worker["site_id"])
+        if site:   # joined by scanning a site QR poster: the site is known, so mark today's attendance now
+            self.db.update_worker(worker["id"], name=u.name, village=u.village, state="active")
+            first = self._check_in(self.db.get_worker(worker["id"]), site, msg)
+            return [Reply(f"Dhanyavaad, {u.name}. Welcome!\n\n{first.text}\n\n{HOW_TO_CHECK_IN}")]
         self.db.update_worker(worker["id"], name=u.name, village=u.village, state="awaiting_site")
         return [Reply(
             f"Dhanyavaad, {u.name}{' (' + u.village + ')' if u.village else ''}.\n\n"
@@ -135,6 +159,87 @@ class Bot:
                 + (f"Location: {info.location}.\n" if info.location else "")
                 + f"Contractor: {info.contractor or 'not on board'}.\n{who}")
         return [Reply(text + ("\n\n" + HOW_TO_LOG if registering else ""))]
+
+    # ------------------------------------------------------------------ site QR check-in
+    def _on_check_in(self, worker, code: str, msg) -> list[Reply]:
+        site = self.db.get_site_by_code(code)
+        if site is None:
+            return [Reply(f"Site code {code} nahi mila. Site code {code} was not found. Please scan the QR poster "
+                          "at your site again, or ask your supervisor for the code.")]
+        if worker is None:
+            self.db.create_worker(msg.phone, state="awaiting_name", site_id=site["id"])
+            return [Reply(f"Namaste! Aap {site['project'] or 'is site'} par hain.\n"
+                          f"Welcome to {site['project'] or 'this site'}. KaamPramaan keeps a record of your "
+                          "working days for welfare board registration.\n\n"
+                          "Apna naam aur gaon bhejiye. Please send your name and village. "
+                          "Today's attendance is saved as soon as you do.")]
+        if worker["state"] == "awaiting_name":
+            self.db.update_worker(worker["id"], site_id=site["id"])
+            return [Reply("Pehle apna naam aur gaon bhejiye. Please send your name and village first.")]
+        return [self._check_in(worker, site, msg)]
+
+    def _check_in(self, worker, site, msg) -> Reply:
+        """One attendance entry per worker, site and day. The wage is not part of a check-in (amount 0);
+        a worker can still log the wage by voice, which adds money but not a second day."""
+        today = self.today_fn().isoformat()
+        if worker["site_id"] != site["id"]:
+            self.db.update_worker(worker["id"], site_id=site["id"])
+        already = [e for e in live_entries(self.db.list_entries(worker["id"]))
+                   if e["kind"] == "work" and e["work_date"] == today and e["site_id"] == site["id"]]
+        place = site["project"] or "your site"
+        if already:
+            return Reply(f"Aaj ki haziri pehle se lagi hai. You are already marked present today at {place}.\n"
+                         f"Ref: {already[0]['hash'][:12]}")
+        entry = ledger.append(self.db, ledger.NewEntry(
+            worker_id=worker["id"], kind="work", work_date=today, amount=0, source="site_qr", site_id=site["id"],
+            contractor=site["contractor"], transcript=f"Checked in at {place} (site code {site['code']})",
+            latitude=msg.latitude, longitude=msg.longitude))
+        v = self._verification(worker["id"])
+        return Reply(
+            f"Haziri lag gayi / Present: {date.fromisoformat(today).strftime('%d %b')}, {place}.\n"
+            f"Supervisor confirm karenge. Your supervisor will confirm it.\n"
+            f"{_eligibility_line(v)}\n{_proof_footer(entry)}")
+
+    # ------------------------------------------------------------------ site supervisor
+    def _on_supervisor(self, site, msg) -> list[Reply]:
+        """A supervisor confirms today's check-ins on WhatsApp, or sends a photo of the paper muster register."""
+        if msg.image:
+            import_id, draft = muster.read_photo(self.db, self.ai, site, msg.image, msg.image_mime, self.media_dir,
+                                                 uploaded_by=f"supervisor {msg.phone}", today=self.today_fn())
+            if not draft["rows"]:
+                return [Reply("Register photo saved, lekin naam aur haziri padh nahi paaye. We could not read names "
+                              f"and attendance from this photo (#{import_id}). Please send a clearer photo of the "
+                              "whole page.")]
+            days_total = sum(len(r["days"]) for r in draft["rows"])
+            return [Reply(f"Register photo #{import_id} padh liya / read: {len(draft['rows'])} workers, "
+                          f"{days_total} worker-days for {draft['month']:02d}/{draft['year']}.\n"
+                          "An officer will review it on the website before it is added to the workers' records.")]
+        today = self.today_fn().isoformat()
+        rows = self.db.site_day(site["id"], today)
+        place = site["project"] or "your site"
+        m = CONFIRM_RE.match(msg.text or "")
+        if m is None:
+            if not rows:
+                return [Reply(f"{place}: aaj abhi tak kisi ne haziri nahi lagayi. No check-ins yet today.\n"
+                              f"Workers check in by scanning the QR poster, or by sending HAZIRI {site['code']}.\n"
+                              "You can also send a photo of your muster register.")]
+            lines = [f"{i}. {r['worker_name'] or 'Unnamed'}{' (confirmed)' if r['roles'] else ''}"
+                     for i, r in enumerate(rows, 1)]
+            return [Reply(f"{place}, {date.fromisoformat(today).strftime('%d %b')}: {len(rows)} checked in.\n"
+                          + "\n".join(lines)
+                          + "\n\nSab sahi hai to CONFIRM bhejiye. Send CONFIRM to confirm everyone, "
+                            "or CONFIRM 1 3 to confirm only those numbers.")]
+        if not rows:
+            return [Reply("Aaj confirm karne ke liye koi haziri nahi hai. Nothing to confirm today.")]
+        picked = {int(n) for n in re.findall(r"\d+", m.group(1))}
+        chosen = [r for i, r in enumerate(rows, 1) if not picked or i in picked]
+        if picked and len(chosen) != len(picked):
+            return [Reply(f"Numbers 1 to {len(rows)} only. Send MUSTER to see the list again.")]
+        who = f"{site['supervisor_name'] or 'Site supervisor'} ({msg.phone})"
+        saved = attest.attest(self.db, chosen, "supervisor", who)
+        names = ", ".join(r["worker_name"] or "Unnamed" for r in chosen)
+        return [Reply(f"Confirmed {saved} of {len(chosen)} for {date.fromisoformat(today).strftime('%d %b')}"
+                      f" ({names}). Dhanyavaad.")]
 
     # ------------------------------------------------------------------ daily use
     def _on_active(self, worker, msg):
@@ -265,11 +370,16 @@ class Bot:
                       "Nothing from the last 24 hours to cancel. An NGO volunteer can help with older entries."))
         target, void = res
         # the default wage for the next day should come from an entry that still counts
-        works = [e for e in live_entries(self.db.list_entries(worker["id"])) if e["kind"] == "work"]
+        works = [e for e in live_entries(self.db.list_entries(worker["id"])) if e["kind"] == "work" and e["amount"]]
         self.db.update_worker(worker["id"], last_wage=works[-1]["amount"] if works else None)
         s = self._summary(worker["id"])
-        what = (f"{date.fromisoformat(target['work_date']).strftime('%d %b')} work, Rs. {rupees(target['amount'])}"
-                if target["kind"] == "work" else f"payment of Rs. {rupees(target['amount'])}")
+        day = date.fromisoformat(target["work_date"]).strftime("%d %b")
+        if target["kind"] == "payment":
+            what = f"payment of Rs. {rupees(target['amount'])}"
+        elif target["amount"]:
+            what = f"{day} work, Rs. {rupees(target['amount'])}"
+        else:
+            what = f"{day} attendance"
         return ToolOutcome(
             {"cancelled": True, "entry": what, "amount": target["amount"], "due": s.due,
              "days_this_month": s.days_this_month},
@@ -279,16 +389,15 @@ class Bot:
 
     def _balance(self, worker) -> ToolOutcome:
         s = self._summary(worker["id"])
-        elig = ("Aap welfare board registration ke liye eligible hain. You can register with the welfare board. "
-                "Send \"registration\" to get your work record.") if s.welfare_eligible else (
-            f"Welfare board ke liye {s.days_to_eligibility} din aur chahiye. "
-            f"{s.days_to_eligibility} more days needed for welfare board registration.")
+        v = self._verification(worker["id"])
         return ToolOutcome(
             {"days_worked": s.days_worked, "days_last_12_months": s.days_last_12_months,
+             "days_confirmed_by_employer_last_12_months": v.employer_days_12m,
              "days_this_month": s.days_this_month, "earned": s.earned, "received": s.paid, "due": s.due,
-             "welfare_eligible": s.welfare_eligible, "days_to_welfare_eligibility": s.days_to_eligibility},
+             "ready_for_welfare_board": v.ready_to_register, "confirmed_days_still_needed": v.verified_days_to_go},
             Reply(f"Total days worked: {s.days_worked}. Last 12 months: {s.days_last_12_months}.\n"
-                  f"Earned Rs. {rupees(s.earned)}, received Rs. {rupees(s.paid)}, due Rs. {rupees(s.due)}.\n{elig}"))
+                  f"Earned Rs. {rupees(s.earned)}, received Rs. {rupees(s.paid)}, due Rs. {rupees(s.due)}.\n"
+                  f"{_eligibility_line(v)}"))
 
     def _report_death(self, msg, u: Understanding) -> ToolOutcome:
         details = u.transcript or msg.text
@@ -343,6 +452,9 @@ class Bot:
         paragraph = self.ai.complaint_paragraph(facts)
         url = self._make_doc(worker, "complaint", lambda path: pdfs.complaint_pdf(
             path, worker, site, s, chain, corr, paragraph, today=self.today_fn()))
+        # tracked from here on: an NGO marks it filed and records what was recovered (website, /dashboard)
+        self.db.open_wage_case(worker["id"], s.due, f"{len(s.unpaid_days)} unpaid days, "
+                               f"{facts['from_date']} to {facts['to_date']}, {facts['contractor']}")
         return ToolOutcome(
             {"created": True, "due": s.due, "unpaid_days": len(s.unpaid_days),
              "from_date": facts["from_date"], "to_date": facts["to_date"], "pdf_attached": True,
@@ -353,25 +465,35 @@ class Bot:
                   document_url=url, document_name="KaamPramaan_complaint.pdf"))
 
     def _registration(self, worker) -> ToolOutcome:
+        """The pre-filled welfare board application with the 90-day work certificate: each working day says who
+        vouched for it (employer side, co-workers, or only the worker)."""
         entries = self.db.list_entries(worker["id"])
         s = summarise(entries, today=self.today_fn())
+        v = self._verification(worker["id"], entries)
         site = self.db.get_site(worker["site_id"])
         chain = ledger.verify_chain(self.db, worker["id"])
-        url = self._make_doc(worker, "registration", lambda path: pdfs.registration_pdf(
-            path, worker, site, entries, s, chain, today=self.today_fn()))
-        head = (f"Aapke {s.days_last_12_months} din record hain. You have {s.days_last_12_months} days recorded in "
-                "the last 12 months.")
-        tail = (" This meets the 90-day rule for welfare board registration." if s.welfare_eligible
-                else f" You need {s.days_to_eligibility} more days for registration.")
+        att = attest.verify_attestations(self.db, worker["id"])
+        sites = {e["site_id"]: self.db.get_site(e["site_id"]) for e in entries if e["site_id"]}
+        url = self._make_doc(worker, "application", lambda path: pdfs.application_pdf(
+            path, worker, site, sites, entries, s, v, chain, att, today=self.today_fn()))
+        self.db.update_worker(worker["id"], application_at=self.today_fn().isoformat())
+        tail = (" Yeh welfare board office mein jama kijiye. Take this to the welfare board office or facilitation "
+                "centre." if v.ready_to_register else "")
         return ToolOutcome(
-            {"created": True, "days_last_12_months": s.days_last_12_months, "days_required": 90,
-             "welfare_eligible": s.welfare_eligible, "days_to_welfare_eligibility": s.days_to_eligibility,
+            {"created": True, "days_last_12_months": s.days_last_12_months,
+             "days_confirmed_by_employer_last_12_months": v.employer_days_12m, "days_required": WELFARE_DAYS_REQUIRED,
+             "ready_for_welfare_board": v.ready_to_register, "confirmed_days_still_needed": v.verified_days_to_go,
              "pdf_attached": True},
-            Reply(head + tail, document_url=url, document_name="KaamPramaan_work_record.pdf"))
+            Reply(_eligibility_line(v, ask=False) + tail, document_url=url, document_name="KaamPramaan_application.pdf"))
 
     # ------------------------------------------------------------------ helpers
     def _summary(self, worker_id):
         return summarise(self.db.list_entries(worker_id), today=self.today_fn())
+
+    def _verification(self, worker_id, entries=None):
+        entries = entries if entries is not None else self.db.list_entries(worker_id)
+        return verify_days(entries, self.db.attestations_for(worker_id), self.db.corroboration_counts(worker_id),
+                           today=self.today_fn())
 
     def _make_doc(self, worker, kind, render) -> str:
         token = secrets.token_urlsafe(16)
@@ -398,6 +520,16 @@ def _proof_footer(entry: dict) -> str:
     return (f"Ref: {entry['hash'][:12]}. Galat hai? \"galat\" bhejiye. If wrong, send \"wrong\".")
 
 
+def _eligibility_line(v, ask: bool = True) -> str:
+    if v.ready_to_register:
+        return (f"{v.employer_days_12m} din confirm hain: welfare board registration ke liye taiyaar. "
+                f"{v.employer_days_12m} days confirmed by your employer in the last 12 months: ready for welfare "
+                "board registration." + (" Send \"registration\" for your application." if ask else ""))
+    return (f"Pichle 12 mahine: {v.total_days_12m} din, {v.employer_days_12m} confirm. "
+            f"Last 12 months: {v.total_days_12m} days, {v.employer_days_12m} confirmed by your employer. "
+            f"{v.verified_days_to_go} more confirmed days needed for welfare board registration.")
+
+
 def days(n: int) -> str:
     return f"{n} day" if n == 1 else f"{n} days"
 
@@ -416,15 +548,20 @@ INTENT_TO_TOOL = {
 }
 TOOL_TO_INTENT = {tool: intent for intent, tool in INTENT_TO_TOOL.items()}
 
+HOW_TO_CHECK_IN = (
+    "Roz site par QR poster scan kijiye aur Send dabaiye. Every day at the site, scan the QR poster and press Send. "
+    "Your supervisor confirms it, and after 90 confirmed days you get your welfare board application."
+)
+
 HOW_TO_LOG = (
-    "Roz shaam ek voice note bhejiye: kahan kaam kiya, kiske saath, kitne paise.\n"
-    "Every evening, send one voice note: where you worked, for whom, and your wage.\n"
-    "Example: \"Worked with Ramesh today, 700 not paid yet\"\n\n"
+    "Roz site par QR poster scan kijiye (ya HAZIRI aur site code bhejiye).\n"
+    "Every day at the site, scan the QR poster (or send HAZIRI and the site code).\n"
+    "Wage bhi likhna ho to voice note bhejiye: \"Worked with Ramesh today, 700 not paid yet\"\n\n"
     "Other things you can say:\n"
     "- \"Ramesh paid me 5000\"\n"
     "- \"How many days?\"\n"
     "- \"Ramesh has not paid me\" (get a complaint)\n"
-    "- \"Registration\" (welfare board work record)\n"
+    "- \"Registration\" (welfare board application)\n"
     "- \"Kaam chahiye\" (find new work)\n"
     "- \"Galat\" / \"wrong\" (cancel your last entry)"
 )

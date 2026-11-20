@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Welfare board view - KaamPramaan{% endblock %}
+{% block content %}
+<h1>Welfare board view</h1>
+<p class="muted">Who can be registered now, who needs their employer to confirm days, whose registration is due for renewal, and records that need a second look. A day counts towards the 90-day rule here only when the employer side confirmed it: the site supervisor on WhatsApp, the site's own muster register, or an officer.</p>
+{% if sent is not none %}<p class="ok" role="status">Renewal reminders sent on WhatsApp: {{ sent }}.</p>{% endif %}
+
+<section class="stats" aria-label="Summary">
+  <div class="stat good"><span>{{ totals.ready }}</span>ready to register now</div>
+  <div class="stat"><span>{{ totals.confirmed_days }}</span>employer-confirmed worker-days (of {{ totals.all_days }} recorded, last 12 months)</div>
+  <div class="stat"><span>{{ totals.applications }}</span>applications generated, not yet registered</div>
+  <div class="stat"><span>{{ totals.registered }}</span>registered with the board</div>
+  <div class="stat {% if totals.renewals %}alert{% endif %}"><span>{{ totals.renewals }}</span>renewals due in 30 days</div>
+  <div class="stat {% if totals.flags %}alert{% endif %}"><span>{{ totals.flags }}</span>records to check</div>
+  <div class="stat"><span>{{ totals.sites }}</span>sites &middot; {{ totals.workers }} workers</div>
+</section>
+
+<h2 id="ready">Ready to register ({{ ready|length }})</h2>
+<p class="muted">{{ required }} or more employer-confirmed days in the last 12 months. Generate the pre-filled application, check the originals at the counter, then enter the registration number.</p>
+<div class="table-wrap"><table>
+  <caption class="sr-only">Workers ready to register</caption>
+  <thead><tr><th scope="col">Worker</th><th scope="col">Site</th><th scope="col">Confirmed days</th><th scope="col">Application</th><th scope="col">Record registration</th></tr></thead>
+  <tbody>
+  {% for r in ready %}
+    <tr>
+      <td><a href="/workers/{{ r.w.id }}">{{ r.w.name or "(unnamed)" }}</a><br><small class="muted">{{ r.w.village or "" }}{% if not r.w.phone %} &middot; no phone{% endif %}</small></td>
+      <td>{{ r.w.project or "-" }}</td>
+      <td><b>{{ r.v.employer_days_12m }}</b> / {{ required }}</td>
+      <td><form method="post" action="/workers/{{ r.w.id }}/work-record"><button class="secondary">{% if r.w.application_at %}Download again{% else %}Generate PDF{% endif %}</button></form>
+        {% if r.w.application_at %}<small class="muted">made {{ r.w.application_at }}</small>{% endif %}</td>
+      <td>
+        <form method="post" action="/workers/{{ r.w.id }}/registered" class="inline">
+          <label class="sr-only" for="reg{{ r.w.id }}">Registration number for {{ r.w.name }}</label>
+          <input id="reg{{ r.w.id }}" name="reg_no" required placeholder="Reg. no." maxlength="64">
+          <label class="sr-only" for="regd{{ r.w.id }}">Registration date</label>
+          <input id="regd{{ r.w.id }}" name="reg_date" type="date" value="{{ today.isoformat() }}" max="{{ today.isoformat() }}" required>
+          <button class="secondary">Save</button>
+        </form>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5">Nobody yet. Workers appear here when their supervisor has confirmed {{ required }} days.</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+
+<h2 id="confirm">Enough days, not enough confirmed ({{ needs_confirmation|length }})</h2>
+<p class="muted">These workers have {{ required }}+ days on record, but some are only their own report or backed by co-workers. Ask the site supervisor to confirm, or upload the site's muster register photo on the <a href="/sites">Sites</a> page.</p>
+<div class="table-wrap"><table>
+  <caption class="sr-only">Workers who need employer confirmation</caption>
+  <thead><tr><th scope="col">Worker</th><th scope="col">Site</th><th scope="col">Employer-confirmed</th><th scope="col">Co-workers</th><th scope="col">Own report</th></tr></thead>
+  <tbody>
+  {% for r in needs_confirmation %}
+    <tr><td><a href="/workers/{{ r.w.id }}">{{ r.w.name or "(unnamed)" }}</a></td><td>{{ r.w.project or "-" }}</td>
+      <td>{{ r.v.employer_days_12m }}</td><td>{{ r.v.coworker_days_12m }}</td><td>{{ r.v.self_days_12m }}</td></tr>
+  {% else %}
+    <tr><td colspan="5">None.</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+
+<h2>Close to {{ required }} ({{ close|length }})</h2>
+<div class="table-wrap"><table>
+  <caption class="sr-only">Workers close to the 90-day rule</caption>
+  <thead><tr><th scope="col">Worker</th><th scope="col">Site</th><th scope="col">Confirmed days</th><th scope="col">Still needed</th></tr></thead>
+  <tbody>
+  {% for r in close %}
+    <tr><td><a href="/workers/{{ r.w.id }}">{{ r.w.name or "(unnamed)" }}</a></td><td>{{ r.w.project or "-" }}</td>
+      <td>{{ r.v.employer_days_12m }}</td><td>{{ r.v.verified_days_to_go }}</td></tr>
+  {% else %}
+    <tr><td colspan="4">None.</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+
+<h2 id="renewals">Renewals due ({{ renewals|length }})</h2>
+<p class="muted">Registered workers whose registration ends within 30 days (renewal period set to {{ renewal_days }} days; change <code>RENEWAL_DAYS</code> in app/board.py for your state).</p>
+{% if renewals %}
+<form method="post" action="/board/reminders"><button>Send WhatsApp reminders</button></form>
+{% endif %}
+<div class="table-wrap"><table>
+  <caption class="sr-only">Registrations due for renewal</caption>
+  <thead><tr><th scope="col">Worker</th><th scope="col">Registration no.</th><th scope="col">Renew by</th><th scope="col">Confirmed days, last 12 months</th></tr></thead>
+  <tbody>
+  {% for r in renewals %}
+    <tr><td><a href="/workers/{{ r.w.id }}">{{ r.w.name or "(unnamed)" }}</a></td><td>{{ r.w.board_reg_no }}</td>
+      <td>{% if r.renewal_on < today %}<span class="bad">{{ r.renewal_on.strftime('%d %b %Y') }} (lapsed)</span>{% else %}{{ r.renewal_on.strftime('%d %b %Y') }}{% endif %}</td>
+      <td>{{ r.v.employer_days_12m }}</td></tr>
+  {% else %}
+    <tr><td colspan="4">None due.</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+
+<h2 id="flags">Records to check</h2>
+<p class="muted">Not proof of fraud: a worker may have moved sites mid-day, or two people may share a name. They are listed so an officer looks before approving.</p>
+<div class="row">
+  <div class="card">
+    <h3>Same day, two sites ({{ two_sites|length }})</h3>
+    <ul>{% for f in two_sites %}<li><a href="/workers/{{ f.worker_id }}">{{ f.name or "(unnamed)" }}</a>: {{ f.work_date }} at {{ f.sites }} sites</li>{% else %}<li class="muted">None.</li>{% endfor %}</ul>
+  </div>
+  <div class="card">
+    <h3>Same name and village ({{ duplicates|length }})</h3>
+    <ul>{% for f in duplicates %}<li>{{ f.name }}{% if f.village %}, {{ f.village }}{% endif %}: {{ f.n }} records ({% for i in f.ids.split(',') %}<a href="/workers/{{ i }}">#{{ i }}</a>{% if not loop.last %}, {% endif %}{% endfor %})</li>{% else %}<li class="muted">None.</li>{% endfor %}</ul>
+  </div>
+</div>
+{% endblock %}

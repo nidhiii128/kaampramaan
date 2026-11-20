@@ -1,0 +1,245 @@
+{% extends "public_base.html" %}
+{% block title %}Try KaamPramaan{% endblock %}
+{% block content %}
+<h1>Try KaamPramaan</h1>
+<p class="lead">Construction workers need 90 days of work in a year to register with their state welfare board, and most cannot prove them. Here a worker scans the QR poster at the site gate (one tap on WhatsApp), the supervisor confirms the day's list, and after 90 confirmed days the worker gets a pre-filled board application. Left: the worker's WhatsApp. Right: the supervisor's WhatsApp and what the system stores.</p>
+<p class="note" role="note">Sandbox, no login. Your test data is private to this browser and deleted after 24 hours. Documents are not legal advice.</p>
+
+<div class="demo-grid">
+  <section aria-labelledby="chat-h">
+    <h2 id="chat-h">1. Worker's WhatsApp <span lang="hi">/ Mazdoor ka phone</span></h2>
+    <div class="scan">
+      <div class="qr small" role="img" aria-label="Site QR code. Scanning it opens WhatsApp with the text {{ check_in_text }}">{{ qr_svg|safe }}</div>
+      <div>
+        <p><b>At the site gate:</b> scanning this poster opens WhatsApp with <code>{{ check_in_text }}</code> typed in.</p>
+        <button type="button" class="hint primary" data-text="{{ check_in_text }}">Scan the site QR</button>
+      </div>
+    </div>
+    <div id="chat" class="chat" role="log" aria-live="polite" aria-label="Conversation"></div>
+    <form id="send" class="composer">
+      <label class="sr-only" for="text">Message</label>
+      <input id="text" placeholder="Type a message, or press the microphone" autocomplete="off">
+      <button type="button" id="mic" class="secondary" aria-pressed="false">Speak</button>
+      <button type="submit">Send</button>
+    </form>
+    <p id="mic-status" class="muted" role="status"></p>
+    <div class="hints" role="group" aria-label="Example messages">
+      <span class="muted">Try:</span>
+      {% for h in ["Kitne din hue?", "registration", "Aaj Ramesh ke saath kaam kiya, 700, abhi nahi mile", "Ramesh ne paisa nahi diya", "galat", "Kaam chahiye"] %}
+      <button type="button" class="hint" data-text="{{ h }}">{{ h }}</button>
+      {% endfor %}
+    </div>
+    {% if ai %}<label class="check"><input type="checkbox" id="autospeak"> Read replies aloud (Gemini voice)</label>{% else %}
+    <p class="muted">Voice needs a Gemini key on the server. Typed messages work without one.</p>{% endif %}
+  </section>
+
+  <section aria-labelledby="ledger-h">
+    <h2 id="sup-h">2. Supervisor's WhatsApp</h2>
+    <p class="muted">The site supervisor sees who checked in today and confirms. Only employer-confirmed days count towards the 90.</p>
+    <div class="sup-actions" role="group" aria-labelledby="sup-h">
+      <button type="button" class="secondary" data-sup="MUSTER">Send MUSTER</button>
+      <button type="button" data-sup="CONFIRM">Send CONFIRM</button>
+    </div>
+    <div id="sup" class="chat short" role="log" aria-live="polite" aria-label="Supervisor conversation"></div>
+    <p class="muted">Short on time? <button type="button" id="history" class="secondary">Add 89 past days, already confirmed</button> then scan the QR for today (if you have not), confirm it, and send "registration".</p>
+    <p id="history-msg" class="muted" role="status"></p>
+
+    <h2 id="ledger-h">3. What the system stored</h2>
+    <div id="chain" class="chain ok" role="status">Loading...</div>
+    <div class="stats" id="tiles"></div>
+    <div class="table-wrap">
+      <table>
+        <caption class="sr-only">Entries in the worker's record</caption>
+        <thead><tr><th scope="col">#</th><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Amount</th><th scope="col">Confirmed by</th><th scope="col">Reference</th></tr></thead>
+        <tbody id="rows"><tr><td colspan="6">Nothing yet. Scan the site QR on the left.</td></tr></tbody>
+      </table>
+    </div>
+    <h3>4. Try to cheat</h3>
+    <p class="muted">Edit a past entry behind the system's back, like a dishonest operator would, and watch the record check catch it.</p>
+    <button type="button" id="cheat">Change a past entry</button>
+    <button type="button" id="restore" class="secondary" hidden>Put it back</button>
+    <button type="button" id="reset" class="secondary">Start over</button>
+    <p id="cheat-msg" class="muted" role="status"></p>
+  </section>
+</div>
+
+<script>
+const AI_ON = {{ ai|tojson }};
+const chat = document.getElementById('chat');
+const $ = id => document.getElementById(id);
+
+function bubble(text, who, link, speakable) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + who;
+  d.appendChild(document.createTextNode(text));
+  if (link) {
+    d.appendChild(document.createElement('br'));
+    const a = document.createElement('a');
+    a.href = link; a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Open PDF';
+    d.appendChild(a);
+  }
+  if (speakable && AI_ON) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'listen'; b.textContent = 'Listen';
+    b.setAttribute('aria-label', 'Listen to this reply');
+    b.addEventListener('click', () => speak(text));
+    d.appendChild(document.createElement('br')); d.appendChild(b);
+  }
+  chat.appendChild(d); chat.scrollTop = chat.scrollHeight;
+}
+
+async function post(url, fd) {
+  const r = await fetch(url, {method: 'POST', body: fd || new FormData()});
+  if (!r.ok) {
+    let m = '';
+    try { m = (await r.json()).detail; } catch (e) {}
+    throw new Error(m || ('Error ' + r.status));
+  }
+  return r;
+}
+
+let player = null;
+async function speak(text) {
+  try {
+    const fd = new FormData(); fd.append('text', text);
+    const blob = await (await post('/demo/speak', fd)).blob();
+    if (player) player.pause();
+    player = new Audio(URL.createObjectURL(blob)); player.play();
+  } catch (e) { $('mic-status').textContent = e.message; }
+}
+
+async function send(text, file) {
+  if (!text && !file) return;
+  bubble(text || 'Voice note', 'me');
+  const fd = new FormData();
+  fd.append('text', text || '');
+  if (file) fd.append('file', file, file.name);
+  try {
+    const replies = await (await post('/demo/send', fd)).json();
+    replies.forEach(m => bubble(m.text, 'bot', m.document_url, true));
+    const auto = $('autospeak');
+    if (auto && auto.checked && replies.length) speak(replies[0].text);
+  } catch (e) { bubble(e.message, 'bot'); }
+  refresh();
+}
+
+function cell(tr, text) { const td = document.createElement('td'); td.textContent = text; tr.appendChild(td); }
+async function refresh() {
+  const d = await (await fetch('/demo/ledger')).json();
+  const chain = $('chain');
+  chain.className = 'chain ' + (d.chain.ok ? 'ok' : 'bad');
+  chain.textContent = d.chain.ok
+    ? '✔ Record intact: all ' + d.chain.entries_checked + ' entries are hash-linked and unchanged.'
+    : '✖ Tampering detected at entry #' + d.chain.broken_at_seq + ': ' + d.chain.reason + '.';
+  const tiles = $('tiles'); tiles.textContent = '';
+  [['employer-confirmed days (need ' + d.summary.required + ')', d.summary.confirmed + ' / ' + d.summary.required, d.summary.ready ? 'good' : ''],
+   ['days on record', d.summary.days, ''], ['wages still due', 'Rs. ' + d.summary.due, '']].forEach(([label, value, cls]) => {
+    const t = document.createElement('div'); t.className = 'stat ' + cls;
+    const s = document.createElement('span'); s.textContent = value;
+    t.appendChild(s); t.appendChild(document.createTextNode(label)); tiles.appendChild(t);
+  });
+  const rows = $('rows'); rows.textContent = '';
+  if (!d.entries.length) { rows.innerHTML = '<tr><td colspan="6">Nothing yet. Scan the site QR on the left.</td></tr>'; }
+  d.entries.slice().reverse().forEach(e => {
+    const tr = document.createElement('tr');
+    cell(tr, e.seq); cell(tr, e.date);
+    cell(tr, e.kind === 'void' ? 'Cancelled #' + e.void_of
+      : e.kind === 'payment' ? 'Payment' : (e.source === 'site_qr' ? 'Check-in (QR)' : 'Work' + (e.paid ? ' (paid)' : '')));
+    cell(tr, e.kind === 'void' || (e.kind === 'work' && !e.amount) ? '-' : 'Rs. ' + e.amount);
+    cell(tr, e.confirmed_by.length ? e.confirmed_by.join(', ') : '-');
+    const td = document.createElement('td'); const c = document.createElement('code'); c.textContent = e.ref;
+    td.appendChild(c); tr.appendChild(td); rows.appendChild(tr);
+  });
+  $('restore').hidden = !d.tampered; $('cheat').disabled = d.tampered;
+}
+
+// ---- voice: record, convert to 16 kHz mono WAV in the browser (what Gemini accepts), send
+function toWav(samples, rate) {
+  const v = new DataView(new ArrayBuffer(44 + samples.length * 2));
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true);
+  v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data');
+  v.setUint32(40, samples.length * 2, true);
+  let o = 44;
+  for (const s of samples) { const x = Math.max(-1, Math.min(1, s)); v.setInt16(o, x < 0 ? x * 0x8000 : x * 0x7FFF, true); o += 2; }
+  return new Blob([v.buffer], {type: 'audio/wav'});
+}
+async function blobToWav(blob) {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const audio = await new Ctx().decodeAudioData(await blob.arrayBuffer());
+  const rate = 16000;
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(audio.duration * rate)), rate);
+  const src = off.createBufferSource(); src.buffer = audio; src.connect(off.destination); src.start();
+  return toWav((await off.startRendering()).getChannelData(0), rate);
+}
+
+let rec = null;
+$('mic').addEventListener('click', async () => {
+  const status = $('mic-status'), mic = $('mic');
+  if (rec) { rec.stop(); return; }
+  if (!navigator.mediaDevices || !window.MediaRecorder) { status.textContent = 'This browser cannot record. Please type instead.'; return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); }
+  catch (e) { status.textContent = 'Microphone not available. Please type instead.'; return; }
+  const chunks = []; rec = new MediaRecorder(stream);
+  rec.ondataavailable = e => chunks.push(e.data);
+  const stopTimer = setTimeout(() => rec && rec.stop(), 30000);
+  rec.onstop = async () => {
+    clearTimeout(stopTimer);
+    stream.getTracks().forEach(t => t.stop());
+    rec = null; mic.textContent = 'Speak'; mic.setAttribute('aria-pressed', 'false');
+    status.textContent = 'Sending your voice note...';
+    try {
+      const wav = await blobToWav(new Blob(chunks, {type: chunks[0] ? chunks[0].type : 'audio/webm'}));
+      status.textContent = '';
+      await send('', new File([wav], 'voice.wav', {type: 'audio/wav'}));
+    } catch (e) { status.textContent = 'Could not read that recording. Please try again or type.'; }
+  };
+  rec.start(); mic.textContent = 'Stop'; mic.setAttribute('aria-pressed', 'true');
+  status.textContent = 'Recording. Say what you did today, then press Stop (30 seconds max).';
+});
+
+$('send').addEventListener('submit', e => { e.preventDefault(); const t = $('text'); send(t.value.trim()); t.value = ''; });
+document.querySelectorAll('.hint').forEach(b => b.addEventListener('click', () => send(b.dataset.text)));
+
+const sup = $('sup');
+function supBubble(text, who) {
+  const d = document.createElement('div'); d.className = 'msg ' + who; d.textContent = text;
+  sup.appendChild(d); sup.scrollTop = sup.scrollHeight;
+}
+document.querySelectorAll('[data-sup]').forEach(b => b.addEventListener('click', async () => {
+  supBubble(b.dataset.sup, 'me');
+  try {
+    const fd = new FormData(); fd.append('text', b.dataset.sup);
+    (await (await post('/demo/supervisor', fd)).json()).forEach(m => supBubble(m.text, 'bot'));
+  } catch (e) { supBubble(e.message, 'bot'); }
+  refresh();
+}));
+$('history').addEventListener('click', async () => {
+  try {
+    const r = await (await post('/demo/history')).json();
+    $('history-msg').textContent = 'Added ' + r.added + ' past working days, each checked in by QR and confirmed by the supervisor.';
+  } catch (e) { $('history-msg').textContent = e.message; }
+  refresh();
+});
+
+$('cheat').addEventListener('click', async () => {
+  try {
+    const r = await (await post('/demo/tamper')).json();
+    $('cheat-msg').textContent = 'Entry #' + r.seq + ' was quietly changed from Rs. ' + r.was + ' to Rs. ' + r.now + '. Look at the record check above.';
+  } catch (e) { $('cheat-msg').textContent = e.message; }
+  refresh();
+});
+$('restore').addEventListener('click', async () => {
+  try { await post('/demo/restore'); $('cheat-msg').textContent = 'Put back. Note the record is intact again only because we restored the exact original value.'; }
+  catch (e) { $('cheat-msg').textContent = e.message; }
+  refresh();
+});
+$('reset').addEventListener('click', async () => {
+  await post('/demo/reset'); chat.textContent = ''; sup.textContent = ''; $('cheat-msg').textContent = ''; $('history-msg').textContent = ''; refresh();
+});
+bubble('Namaste! I keep a record of your working days. At the site, scan the QR poster to mark today\'s attendance. You can also speak or type, for example "Kitne din hue?" or "registration".', 'bot');
+refresh();
+</script>
+{% endblock %}
