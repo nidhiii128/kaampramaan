@@ -65,6 +65,14 @@ Design choices worth knowing:
   attached voice note or photo. Editing, deleting or reordering an entry, or swapping a file, is detected by
   `verify_chain()` and shown on the website and in every PDF. Appends take a write lock (`BEGIN IMMEDIATE`) so
   concurrent messages cannot fork the chain.
+- **Mistakes can be cancelled, never edited.** Every saved reply ends with a short proof reference (the first 12
+  characters of the entry's hash, also printed in the PDFs) and "Galat hai? send galat". That appends a `void` entry
+  pointing at the mistaken one, so the chain stays valid and the cancellation is on the record. Cancelled entries are
+  excluded from totals, PDFs, co-worker counts and contractor records, and the PDFs say how many were cancelled. Only
+  entries from the last 24 hours can be cancelled this way, so repeating "galat" cannot erase history. Gemini can
+  cancel and re-log in one message ("galat, 700 tha"). Databases created before this feature are migrated on start.
+- **The worker holds a proof too.** The reference arrives in a WhatsApp message, which carries a timestamp from Meta,
+  so the worker has evidence that does not depend on this server's database.
 - **Payments are matched to the oldest unpaid days first**, so the complaint lists exactly which days are unpaid.
 - **Co-worker confirmation.** For each working day the website and PDFs show how many other workers logged the same
   site on the same date.
@@ -89,7 +97,7 @@ When a worker says "kaam chahiye" (or the agent calls `find_work`), `app/recomme
    | match | 0.40 | Embedding similarity to the request (and to the worker's past work) |
    | distance | 0.20 | Worker's last shared location to the site |
    | wage | 0.15 | Opening's wage compared with what this worker usually earns |
-   | reliability | 0.15 | Share of days logged against this contractor, by all workers, that were paid (FIFO, smoothed) |
+   | reliability | 0.15 | Share of days logged against this contractor, by all workers, that were paid (FIFO, smoothed). Self-reported, so warnings say "workers have reported unpaid wages" and need 2+ workers and 3+ unpaid days |
    | familiar | 0.10 | This worker was paid by this contractor before (up), or is owed money by them (down, with a warning) |
 
 3. **Logging.** Every shown result is stored in `recommendations` with its rank and score, so changes can be
@@ -107,6 +115,9 @@ including Hindi-only requests like "rang rogan ka kaam" and vague ones like "kaa
 | gemini-embedding-001 | full ranker | 93% | 93% | 0.95 |
 | offline hashing | meaning only | 57% | 71% | 0.68 |
 | offline hashing | full ranker | 71% | 86% | 0.80 |
+
+Contractor names are matched conservatively: "Ramesh" matches "Ramesh Yadav", but "Ramesh Yadav" and "Ramesh Sharma"
+are different people.
 
 Known weakness: a new contractor with no history gets a neutral reliability score, so a good opening from them can
 lose to a known contractor's weaker match (the one Gemini miss, "bijli ka kaam aata hai").
@@ -176,8 +187,16 @@ app/
   db.py          SQLite schema and queries
   templates/     website pages
 scripts/seed_demo.py
-tests/           ledger, records, parser, agent tool calls, full conversation, webhook, website
+tests/           ledger, void/cancel, records, parser, agent tool calls, full conversation, webhook, website
 ```
+
+## Legal wording
+
+The welfare-board PDF no longer cites a section of the BOCW Act 1996: the four Labour Codes came into force on
+21 Nov 2025 and the old Acts were repealed, so it says "90 days in the preceding 12 months (confirm the current
+requirement with your state building workers' welfare board)". Have a labour lawyer or NGO check the PDFs against your
+state's rules before real use. The records are the worker's own account, backed by a tamper-evident log; they support a
+complaint, they do not replace an employer's muster roll.
 
 ## Roadmap
 

@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 Intent = Literal[
     "register_details", "log_work", "record_payment", "ask_balance",
-    "request_complaint", "request_registration", "report_death", "find_work", "help", "unknown",
+    "request_complaint", "request_registration", "report_death", "find_work", "cancel_last", "help", "unknown",
 ]
 
 
@@ -66,6 +66,7 @@ intents:
 - request_registration: they ask about welfare board registration
 - report_death: someone reports that a worker died or was badly injured
 - find_work: they are looking for new work or a job
+- cancel_last: they say their last entry was wrong or ask to cancel / undo it
 - help: greeting or asking what to do
 Return the transcript in Latin script (romanised if needed)."""
 
@@ -88,6 +89,8 @@ Use the tools to act on the message:
 - They say they were not paid, or ask for a complaint: call make_complaint.
 - They ask about welfare board registration or their work record: call make_work_record.
 - Someone reports that a worker died or was badly injured: call report_death.
+- They say the last entry was wrong ("galat", "wrong", "cancel", "undo"): call void_last_entry. If they
+  also give the correct values, call void_last_entry first, then log_work or record_payment.
 - They are looking for new work: call find_work with what kind of work and where, if they said it.
   Tell them the top openings with wage, place and contact, and repeat any warning the tool gives.
 One message can need more than one tool, for example work logged and money received.
@@ -156,6 +159,12 @@ TOOLS = [
                           "description": "Kind of work and place they asked for, in Latin script. Empty if not said."},
             },
         },
+    },
+    {
+        "name": "void_last_entry",
+        "description": "Cancel the worker's most recent work or payment entry (only works within 24 hours). "
+                       "The cancelled entry stays on the record but no longer counts.",
+        "parameters": {"type": "object", "properties": {"transcript": _TRANSCRIPT}},
     },
     {
         "name": "report_death",
@@ -444,6 +453,8 @@ def parse_text(text: str, expected: str = "none", today: date | None = None) -> 
     worked = _has(t, ["worked", "kaam kiya", "work today", "aaj kaam", "duty", "kaam pe", "kaam par"])
     if _has(t, ["died", "death", " dead", "maut", "guzar gay", "expired", "mar gay", "accident"]):
         u.intent = "report_death"
+    elif _has(t, ["galat", "ghalat", "wrong", "cancel", "undo", "mistake", "delete last", "last entry"]):
+        u.intent = "cancel_last"
     elif _has(t, ["not paid me", "hasn't paid", "has not paid", "didn't pay", "did not pay", "nahi de raha",
                   "nahi diya", "paisa nahi", "complaint", "shikayat"]):
         u.intent = "request_complaint"

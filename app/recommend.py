@@ -27,7 +27,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 
-from .records import summarise
+from .records import live_entries, summarise
 
 log = logging.getLogger(__name__)
 
@@ -127,10 +127,16 @@ def norm_contractor(name: str | None) -> str:
 
 
 def same_contractor(a: str | None, b: str | None) -> bool:
+    """Same contractor if the cleaned names are equal, or one is just a first name ("Ramesh") that matches
+    the first word of the other ("Ramesh Yadav"). Two different full names that share a first name
+    ("Ramesh Yadav", "Ramesh Sharma") are NOT the same: a wrong match would blame one man for another's debts."""
     a, b = norm_contractor(a), norm_contractor(b)
     if not a or not b:
         return False
-    return a == b or a.split()[0] == b.split()[0]
+    if a == b:
+        return True
+    wa, wb = a.split(), b.split()
+    return (len(wa) == 1 and wa[0] == wb[0]) or (len(wb) == 1 and wb[0] == wa[0])
 
 
 @dataclass
@@ -156,7 +162,7 @@ def contractor_records(entries, today: date) -> dict[str, PayRecord]:
         by_worker[e["worker_id"]].append(e)
     records: dict[str, PayRecord] = defaultdict(PayRecord)
     for wid, rows in by_worker.items():
-        for e in rows:
+        for e in live_entries(rows):
             if e["kind"] == "work" and norm_contractor(e["contractor"]):
                 records[norm_contractor(e["contractor"])].days += 1
         for u in summarise(rows, today=today).unpaid_days:
@@ -222,7 +228,7 @@ def recommend(db, worker, query: str | None, embedder: CachedEmbedder, today: da
     openings = [dict(o) for o in db.list_open_openings(today.isoformat())]
     if not openings:
         return []
-    mine = [dict(e) for e in db.list_entries(worker["id"])]
+    mine = live_entries(db.list_entries(worker["id"]))
     profile = profile_text(mine)
     vague = is_vague(query)
 
@@ -269,8 +275,9 @@ def recommend(db, worker, query: str | None, embedder: CachedEmbedder, today: da
         s["reliability"] = rec.score if rec else 0.5
         if rec and rec.days >= 5 and rec.unpaid_days == 0:
             reasons.append(f"{o['contractor']} paid all {rec.days} days workers logged")
-        if rec and len(rec.workers_owed) >= 2:
-            warning = f"{o['contractor']} still owes wages to {len(rec.workers_owed)} workers"
+        if rec and len(rec.workers_owed) >= 2 and rec.unpaid_days >= 3:
+            # Self-reported by workers and not verified, so the wording says "reported", not "owes".
+            warning = f"{len(rec.workers_owed)} workers have reported unpaid wages from {o['contractor']}"
 
         mine_rec = find_record(my_records, o["contractor"])
         if mine_rec and mine_rec.unpaid_days:

@@ -2,7 +2,11 @@
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-WELFARE_DAYS_REQUIRED = 90  # BOCW Act 1996, Section 12: 90 days in the preceding 12 months
+WELFARE_DAYS_REQUIRED = 90  # long-standing welfare board rule: 90 days in the preceding 12 months
+# The BOCW Act 1996 this rule came from was folded into the new Labour Codes (in force 21 Nov 2025), so
+# documents say "confirm with your state board" instead of citing a section that may no longer apply.
+WELFARE_RULE_NOTE = ("90 days in the preceding 12 months (welfare board rule; confirm the current "
+                     "requirement with your state building workers' welfare board)")
 
 
 @dataclass
@@ -24,6 +28,7 @@ class Summary:
     paid: int
     due: int
     unpaid_days: list[UnpaidDay] = field(default_factory=list)
+    cancelled_entries: int = 0      # entries the worker cancelled; they are excluded from every total
 
     @property
     def welfare_eligible(self) -> bool:
@@ -34,12 +39,21 @@ class Summary:
         return max(0, WELFARE_DAYS_REQUIRED - self.days_last_12_months)
 
 
+def live_entries(entries) -> list[dict]:
+    """Work and payment entries that were not cancelled by a later 'void' entry, in ledger order."""
+    rows = [dict(e) for e in entries]
+    voided = {(r.get("worker_id"), r.get("void_of")) for r in rows if r["kind"] == "void"}
+    return [r for r in rows if r["kind"] in ("work", "payment") and (r.get("worker_id"), r["seq"]) not in voided]
+
+
 def summarise(entries, today: date | None = None) -> Summary:
     """Payments are applied to the oldest unpaid days first, so the list of
     unpaid days is exactly what a complaint should list."""
     today = today or date.today()
-    work = [dict(e) for e in entries if e["kind"] == "work"]
-    payments = [dict(e) for e in entries if e["kind"] == "payment"]
+    all_rows = [dict(e) for e in entries]
+    live = live_entries(all_rows)
+    work = [e for e in live if e["kind"] == "work"]
+    payments = [e for e in live if e["kind"] == "payment"]
     work.sort(key=lambda e: (e["work_date"], e["seq"]))
 
     dates = {e["work_date"] for e in work}
@@ -72,6 +86,7 @@ def summarise(entries, today: date | None = None) -> Summary:
         paid=paid_on_spot + paid_later,
         due=sum(u.still_due for u in unpaid),
         unpaid_days=unpaid,
+        cancelled_entries=sum(1 for e in all_rows if e["kind"] == "void"),
     )
 
 
