@@ -26,6 +26,7 @@ class Settings:
     gemini_tts_voice: str = "Kore"
     voice_replies: bool = False      # answer WhatsApp voice notes with a voice note (needs ffmpeg)
     demo_mode: bool = False          # public no-login /demo sandbox
+    open_dashboard: bool = False     # demo deployments only: NGO pages without a login, filled with sample data
     wa_number: str = ""              # the WhatsApp number workers message, e.g. 919800000000 (for site QR posters)
 
     def today(self) -> date:
@@ -74,5 +75,6 @@ def load_settings() -> Settings:
         gemini_tts_voice=env("GEMINI_TTS_VOICE", "Kore"),
         voice_replies=_flag(env("KP_VOICE_REPLIES", "")),
         demo_mode=_flag(env("KP_DEMO_MODE", "")),
+        open_dashboard=_flag(env("KP_OPEN_DASHBOARD", "")),
         wa_number=env("KP_WA_NUMBER", ""),
     )

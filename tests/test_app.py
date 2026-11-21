@@ -90,3 +90,15 @@ def test_webhook_signature_and_dedup(tmp_path):
         assert r.status_code == 200
     worker = app.state.db.get_worker_by_phone("919811111111")
     assert worker["state"] == "awaiting_name"  # processed exactly once
+
+
+def test_open_dashboard_needs_no_login_and_has_sample_data(tmp_path):
+    s = make_settings(tmp_path, admin_password='', open_dashboard=True)
+    c = TestClient(create_app(s, ai=BoardReadingAI(), today_fn=lambda: TODAY))
+    page = c.get('/dashboard')
+    assert page.status_code == 200 and 'Raju Kumar' in page.text
+
+
+def test_dashboard_still_locked_by_default(settings):
+    c = TestClient(create_app(settings, ai=BoardReadingAI(), today_fn=lambda: TODAY))
+    assert c.get('/dashboard').status_code == 401

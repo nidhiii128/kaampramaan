@@ -62,3 +62,20 @@ def test_complaint_text_using_only_known_numbers_is_kept():
     text = "Raju worked 2 days at Sector 62 and is owed Rs. 1,400 by Ramesh."
     ai = make_ai({"main": text, "backup": "x", "light": "x"})
     assert ai.complaint_paragraph(FACTS) == text
+
+
+def test_failed_model_is_skipped_on_next_message():
+    ai = make_ai({"main": busy(504), "backup": "ok", "light": "ok"})
+    ai._generate("first")
+    ai._generate("second")
+    # main timed out once, so the second message goes straight to backup
+    assert ai.client.models.calls == ["main", "backup", "backup"]
+
+
+def test_all_models_cooling_down_still_tries_once():
+    ai = make_ai({"main": busy(429), "backup": busy(429), "light": busy(429)})
+    with pytest.raises(errors.APIError):
+        ai._generate("a")
+    with pytest.raises(errors.APIError):
+        ai._generate("b")
+    assert ai.client.models.calls.count("main") == 2

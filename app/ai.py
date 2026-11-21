@@ -205,6 +205,8 @@ TOOLS = [
 ]
 TOOL_NAMES = {t["name"] for t in TOOLS}
 MAX_AGENT_STEPS = 4
+RETRYABLE_CODES = (404, 429, 500, 502, 503, 504)
+COOLDOWN_SECONDS = 300
 
 
 @dataclass
@@ -232,6 +234,7 @@ class AI:
         # Try the main model first; on overload (503), rate limit (429) or a retired model (404)
         # move to the next one, so a busy model does not stop workers from logging.
         self.models = [model] + [m for m in fallback_models if m and m != model]
+        self._cooldown: dict[str, float] = {}  # model -> monotonic time it may be tried again
         self.model = model
         self.tts_models = [m for m in tts_models if m]
         self.tts_voice = tts_voice
@@ -242,8 +245,8 @@ class AI:
             from google.genai import types
             # Keep the SDK's own retries short; _generate() moves to the next model instead of waiting.
             self.client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
-                timeout=30_000,
-                retry_options=types.HttpRetryOptions(attempts=2, initial_delay=1, max_delay=4),
+                timeout=12_000,
+                retry_options=types.HttpRetryOptions(attempts=1),
             ))
 
     @property
@@ -255,20 +258,31 @@ class AI:
         return self.client is not None
 
     def _generate(self, contents, config=None):
+        """Try models in order. A model that fails (busy, out of quota, timing out) is skipped for
+        COOLDOWN_SECONDS, so one slow model cannot make every message wait for its timeout."""
         from google.genai import errors
+        now = time.monotonic()
+        healthy = [m for m in self.models if self._cooldown.get(m, 0) <= now]
+        order = healthy or self.models  # if every model is cooling down, try them all once anyway
         last = None
-        for attempt in range(2):  # two passes over the model list, short pause in between
-            if attempt:
-                time.sleep(2)
-            for m in self.models:
-                try:
-                    return self.client.models.generate_content(model=m, contents=contents, config=config)
-                except errors.APIError as e:
-                    if getattr(e, "code", None) in (404, 429, 500, 503):
-                        log.warning("Gemini model %s failed with %s, trying next model", m, e.code)
-                        last = e
-                        continue
+        for m in order:
+            try:
+                resp = self.client.models.generate_content(model=m, contents=contents, config=config)
+                self._cooldown.pop(m, None)
+                return resp
+            except errors.APIError as e:
+                if getattr(e, "code", None) in RETRYABLE_CODES:
+                    log.warning("Gemini model %s failed with %s, skipping it for %ss", m, e.code, COOLDOWN_SECONDS)
+                    self._cooldown[m] = time.monotonic() + COOLDOWN_SECONDS
+                    last = e
+                    continue
+                raise
+            except Exception as e:  # network timeouts surface as httpx errors, not APIError
+                if "timeout" not in type(e).__name__.lower() and "timed out" not in str(e).lower():
                     raise
+                log.warning("Gemini model %s timed out, skipping it for %ss", m, COOLDOWN_SECONDS)
+                self._cooldown[m] = time.monotonic() + COOLDOWN_SECONDS
+                last = e
         raise last
 
     # ---------- message understanding ----------

@@ -24,7 +24,10 @@ def work_days(n_days, skip_sundays=True):
 
 
 def main():
-    db = Database(load_settings().db_path)
+    seed(Database(load_settings().db_path))
+
+
+def seed(db):
     pwd = db.create_site(project="Road widening, Sector 62", principal_employer="PWD Delhi",
                          employer_type="government", contractor="Ramesh Constructions", location="Delhi",
                          supervisor_name="Mohan Singh", supervisor_phone="919800000201")

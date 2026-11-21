@@ -43,9 +43,18 @@ def create_app(settings: Settings | None = None, ai: AI | None = None, today_fn=
     app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
     tpl = Jinja2Templates(directory=os.path.join(HERE, "templates"))
     tpl.env.filters["rupees"] = rupees
-    security = HTTPBasic()
+    security = HTTPBasic(auto_error=not s.open_dashboard)
 
-    def staff(creds: HTTPBasicCredentials = Depends(security)) -> str:
+    if s.open_dashboard:
+        # Demo deployment: show the NGO pages without a login, with made-up sample workers.
+        log.warning("KP_OPEN_DASHBOARD is on: NGO pages need no login. Use only for demos with sample data.")
+        if not db.list_workers():
+            from scripts.seed_demo import seed
+            seed(db)
+
+    def staff(creds: HTTPBasicCredentials | None = Depends(security)) -> str:
+        if s.open_dashboard:
+            return "demo"
         if not s.admin_password:
             raise HTTPException(503, "Set KP_ADMIN_PASSWORD to use the website")
         ok = secrets.compare_digest(creds.username, s.admin_user) and \
